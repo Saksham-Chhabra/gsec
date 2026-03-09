@@ -8,12 +8,12 @@
     "ios": "react-native run-ios"
   },
   "dependencies": {
-    "@react-navigation/native": "^6.1.9",
+    "@react-navigation/native": "^6.1.18",
     "react": "18.2.0",
     "react-native": "0.74.0",
     "react-native-keychain": "^8.2.0",
     "react-native-libsodium": "^1.7.0",
-    "react-native-tcp-socket": "^6.2.0"
+    "react-native-tcp-socket": "^6.4.1"
   },
   "devDependencies": {
     "@tsconfig/react-native": "^3.0.0",
