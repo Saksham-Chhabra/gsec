@@ -80,6 +80,7 @@ export const setupWebSocket = (server: Server) => {
                                     recipientId: new Types.ObjectId(payload.recipientId as string),
                                     senderId: new Types.ObjectId(ws.userId as string),
                                     encryptedPayload: JSON.stringify({ 
+                                        type: payload.type,
                                         ciphertext: payload.ciphertext, 
                                         header: payload.header 
                                     })

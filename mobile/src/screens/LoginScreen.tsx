@@ -1,7 +1,8 @@
 import React, { useState } from 'react';
-import { View, Text, TextInput, Button, StyleSheet, Alert, TouchableOpacity, KeyboardAvoidingView, Platform, ScrollView } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { View, Text, TextInput, Button, StyleSheet, Alert, TouchableOpacity, KeyboardAvoidingView, Platform, ScrollView, Keyboard } from 'react-native';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { apiClient } from '../services/api';
+import { socketService } from '../services/socket';
 import { saveAuthToken, saveUserId } from '../storage/db';
 import { generateIdentityKeyPair, getIdentityKeyPair } from '../crypto/keys';
 
@@ -10,6 +11,17 @@ export const LoginScreen = ({ navigation }: any) => {
     const [password, setPassword] = useState('');
     const [loading, setLoading] = useState(false);
     const [showPassword, setShowPassword] = useState(false);
+    const insets = useSafeAreaInsets();
+    const [keyboardVisible, setKeyboardVisible] = useState(false);
+
+    React.useEffect(() => {
+        const keyboardDidShowListener = Keyboard.addListener('keyboardDidShow', () => setKeyboardVisible(true));
+        const keyboardDidHideListener = Keyboard.addListener('keyboardDidHide', () => setKeyboardVisible(false));
+        return () => {
+            keyboardDidShowListener.remove();
+            keyboardDidHideListener.remove();
+        };
+    }, []);
 
     const handleLogin = async () => {
         if (!username || !password) {
@@ -44,6 +56,7 @@ export const LoginScreen = ({ navigation }: any) => {
             }
 
             Alert.alert("Success", "Logged in successfully!");
+            socketService.connect(); // Connect immediately after login
             navigation.replace('Search');
         } catch (error: any) {
             console.error("Login failed:", error);
@@ -55,12 +68,16 @@ export const LoginScreen = ({ navigation }: any) => {
     };
 
     return (
-        <SafeAreaView style={styles.container}>
+        <SafeAreaView style={styles.container} edges={['top', 'left', 'right']}>
             <KeyboardAvoidingView
                 behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
                 style={{ flex: 1 }}
+                keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 0}
             >
-                <ScrollView contentContainerStyle={styles.scrollContent} keyboardShouldPersistTaps="handled">
+                <ScrollView 
+                    contentContainerStyle={[styles.scrollContent, { paddingBottom: keyboardVisible ? 20 : insets.bottom }]} 
+                    keyboardShouldPersistTaps="handled"
+                >
                     <View style={styles.inner}>
                         <Text style={styles.title}>G-SEC</Text>
                         <Text style={styles.subtitle}>Quantum-Resistant Tactical Messaging</Text>
@@ -115,7 +132,7 @@ export const LoginScreen = ({ navigation }: any) => {
 
 const styles = StyleSheet.create({
     container: { flex: 1, backgroundColor: '#000' },
-    scrollContent: { flexGrow: 1, justifyContent: 'center' },
+    scrollContent: { flexGrow: 1, paddingBottom: 20 },
     inner: { padding: 30 },
     title: { color: '#0f0', fontSize: 48, fontWeight: '900', textAlign: 'center', letterSpacing: 5 },
     subtitle: { color: '#444', fontSize: 12, marginBottom: 40, textAlign: 'center', textTransform: 'uppercase', letterSpacing: 2 },

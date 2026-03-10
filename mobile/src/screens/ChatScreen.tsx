@@ -1,12 +1,12 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { View, Text, TextInput, Button, FlatList, StyleSheet, KeyboardAvoidingView, Platform, TouchableOpacity, Keyboard } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
-import { ratchetEncrypt, ratchetDecrypt, RatchetState, RatchetMessageHeader } from '../crypto/ratchet';
-import { createHandshakeInit, createHandshakeResponse, processHandshake, HandshakeMessage } from '../crypto/handshake';
+import { createHandshakeInit } from '../crypto/handshake';
 import { getIdentityKeyPair, generateIdentityKeyPair } from '../crypto/keys';
 import { socketService } from '../services/socket';
 import { getRatchetState, saveRatchetState, getChatMessages, saveChatMessage, LocalMessage, getUserId, deleteChatMessage } from '../storage/db';
 import sodium from 'libsodium-wrappers';
+import { messageService } from '../services/MessageService';
 
 interface Message {
   id: string;
@@ -24,16 +24,24 @@ export const ChatScreen = ({ route }: any) => {
   const [statusMessage, setStatusMessage] = useState('Checking security...');
   const [timer, setTimer] = useState<number>(0); 
   const insets = useSafeAreaInsets();
-  const ratchetStateRef = useRef<RatchetState | null>(null);
   const myKeysRef = useRef<any>(null);
   const myIdRef = useRef<string | null>(null);
-  const handshakePendingRef = useRef(false);
+
+  const [keyboardVisible, setKeyboardVisible] = useState(false);
 
   useEffect(() => {
+    const keyboardDidShowListener = Keyboard.addListener(
+      'keyboardDidShow',
+      () => setKeyboardVisible(true)
+    );
+    const keyboardDidHideListener = Keyboard.addListener(
+      'keyboardDidHide',
+      () => setKeyboardVisible(false)
+    );
+
     // 1. Initialize Sodium and load any existing Ratchet state + messages from DB
     const initChat = async () => {
       await sodium.ready;
-      socketService.connect();
 
       myIdRef.current = await getUserId();
       let keys = await getIdentityKeyPair();
@@ -44,17 +52,14 @@ export const ChatScreen = ({ route }: any) => {
       
       const loadedState = await getRatchetState(peerId);
       if (loadedState) {
-          ratchetStateRef.current = loadedState;
           setSessionActive(true);
           setStatusMessage('');
       } else {
           setStatusMessage('Initiating secure handshake...');
-          // Let's send a handshake init if we don't have a state
-          if (!handshakePendingRef.current) {
-              const handshake = await createHandshakeInit(myIdRef.current!, keys, keys); // Using identity key as initial ratchet key for simplification
-              socketService.sendHandshake(peerId, handshake);
-              handshakePendingRef.current = true;
-          }
+          // Generate fresh ephemeral ratchet key for this session
+          const ratchetKeys = sodium.crypto_box_keypair();
+          const handshake = await createHandshakeInit(myIdRef.current!, peerId, keys, ratchetKeys);
+          socketService.sendHandshake(peerId, handshake);
       }
 
       const storedMsgs = await getChatMessages(peerId);
@@ -68,80 +73,26 @@ export const ChatScreen = ({ route }: any) => {
     
     initChat();
 
-    // 2. Listen to incoming WebSockets
-    const handleIncomingMessage = async (payload: any) => {
-        if (payload.type === 'key_exchange' || payload.type === 'key_exchange_response') {
-            console.log(`[Handshake] Received ${payload.type} from ${payload.senderId}`);
-            
-            if (!myKeysRef.current || !myIdRef.current) return;
 
-            const isInitiator = payload.type === 'key_exchange_response';
-            const { state } = await processHandshake(payload, myKeysRef.current, myKeysRef.current, isInitiator);
-            
-            ratchetStateRef.current = state;
-            await saveRatchetState(peerId, state);
-            setSessionActive(true);
-            setStatusMessage('');
-
-            if (payload.type === 'key_exchange') {
-                // Respond to their init
-                const response = await createHandshakeResponse(myIdRef.current, myKeysRef.current, myKeysRef.current);
-                socketService.sendHandshake(peerId, response);
+    const loadMessages = async () => {
+        // 1. Reload Ratchet State to see if a background handshake finished
+        const loadedState = await getRatchetState(peerId);
+        if (loadedState) {
+            if (!sessionActive) {
+                setSessionActive(true);
+                setStatusMessage('');
             }
-            return;
         }
 
-        if (payload.type !== 'chat_message') return;
-        if (!ratchetStateRef.current) {
-            console.warn("Received chat message but no E2EE session active. Ignoring.");
-            return;
-        }
-        
-        try {
-            // Convert flat arrays back to Uint8Arrays for cryptography
-            const ciphertext = new Uint8Array(payload.ciphertext);
-            const header: RatchetMessageHeader = {
-                DHs: new Uint8Array(payload.header.DHs),
-                pn: payload.header.pn,
-                n: payload.header.n
-            };
-
-            const dec = await ratchetDecrypt(ratchetStateRef.current, header, ciphertext, sodium.from_string("g-sec-chat"));
-            ratchetStateRef.current = dec.state;
-            
-            // Persist the ratcheted state securely
-            await saveRatchetState(peerId, ratchetStateRef.current);
-
-            const incomingText = sodium.to_string(dec.plaintext);
-            console.log(`[Ratchet] Decrypted message: "${incomingText}" (Length: ${incomingText.length})`);
-            
-            let expiresAt: string | undefined;
-            if (payload.timer && payload.timer > 0) {
-                expiresAt = new Date(Date.now() + payload.timer * 1000).toISOString();
-            }
-
-            const newMsg: Message = {
-                id: Date.now().toString(),
-                text: incomingText,
-                isSender: false,
-                timestamp: new Date(),
-                expiresAt
-            } as any;
-
-            await saveChatMessage(peerId, {
-                ...newMsg,
-                timestamp: newMsg.timestamp.toISOString(),
-                expiresAt
-            });
-
-            setMessages(prev => [...prev, newMsg]);
-            
-        } catch (e) {
-            console.error("Failed to decrypt incoming message", e);
-        }
+        // 2. Load messages
+        const storedMsgs = await getChatMessages(peerId);
+        setMessages(storedMsgs.map(m => ({
+            ...m,
+            timestamp: new Date(m.timestamp)
+        })));
     };
 
-    socketService.addListener(handleIncomingMessage);
+    messageService.addUIListener(loadMessages);
 
     // 3. Cleanup expired messages every second
     const cleanupInterval = setInterval(async () => {
@@ -157,35 +108,21 @@ export const ChatScreen = ({ route }: any) => {
     }, 1000);
 
     return () => {
-        socketService.removeListener(handleIncomingMessage);
+        messageService.removeUIListener(loadMessages);
         clearInterval(cleanupInterval);
+        keyboardDidShowListener.remove();
+        keyboardDidHideListener.remove();
     };
   }, []);
 
   const sendMessage = async () => {
-    if (!inputText.trim() || !ratchetStateRef.current) return;
+    if (!inputText.trim() || !sessionActive) return;
     const plaintext = inputText.trim();
     setInputText('');
     
     try {
-        const ad = sodium.from_string("g-sec-chat");
-        const enc = await ratchetEncrypt(ratchetStateRef.current, sodium.from_string(plaintext), ad);
+        await messageService.encryptAndSendMessage(peerId, plaintext, timer);
         
-        // Update local ratchet state and persist
-        ratchetStateRef.current = enc.state;
-        await saveRatchetState(peerId, ratchetStateRef.current);
-        
-        // Serialize header for JSON
-        const flatHeader = {
-            DHs: Array.from(enc.header.DHs),
-            pn: enc.header.pn,
-            n: enc.header.n
-        };
-
-        socketService.sendChatMessage(peerId, enc.ciphertext, flatHeader, timer);
-        
-        console.log(`[Ratchet] Encrypted and sending (Timer: ${timer}s): "${plaintext}"`);
-
         let expiresAt: string | undefined;
         if (timer > 0) {
             expiresAt = new Date(Date.now() + timer * 1000).toISOString();
@@ -240,9 +177,9 @@ export const ChatScreen = ({ route }: any) => {
   return (
     <SafeAreaView style={styles.container} edges={['top', 'left', 'right']}>
       <KeyboardAvoidingView 
-        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+        behavior={Platform.OS === 'ios' ? 'padding' : 'padding'}
         style={styles.keyboardView}
-        keyboardVerticalOffset={Platform.OS === 'ios' ? 90 : 0}
+        keyboardVerticalOffset={Platform.OS === 'ios' ? 90 : 25}
       >
         <View style={styles.header}>
             <Text style={styles.headerTitle}>{peerUsername}</Text>
@@ -257,7 +194,7 @@ export const ChatScreen = ({ route }: any) => {
 
         {!sessionActive && (
              <View style={styles.warningBox}>
-                <Text style={styles.warningText}>Handshaking...</Text>
+                <Text style={styles.warningText}>Securing Channel...</Text>
              </View>
         )}
 
@@ -269,7 +206,7 @@ export const ChatScreen = ({ route }: any) => {
           inverted
         />
 
-        <View style={[styles.inputContainer, { paddingBottom: Math.max(insets.bottom, 10) }]}>
+        <View style={[styles.inputContainer, { paddingBottom: keyboardVisible ? 10 : Math.max(insets.bottom, 10) }]}>
           <TouchableOpacity onPress={cycleTimer} style={styles.timerButton}>
              <Text style={styles.timerText}>{timer === 0 ? "∞" : `${timer}s`}</Text>
           </TouchableOpacity>
@@ -306,7 +243,6 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1, 
     borderBottomColor: '#222' 
   },
-  headerTitle: { color: '#fff', fontSize: 18, fontWeight: 'bold' },
   secureBadge: { backgroundColor: '#004d00', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 10 },
   secureText: { color: '#0f0', fontSize: 10, fontWeight: 'bold' },
   statusText: { color: '#888', fontSize: 12 },
@@ -332,7 +268,7 @@ const styles = StyleSheet.create({
     backgroundColor: '#111', 
     color: '#fff', 
     paddingHorizontal: 15, 
-    paddingVertical: Platform.OS === 'ios' ? 12 : 8, 
+    paddingVertical: Platform.OS === 'ios' ? 12 : 10, 
     borderRadius: 22, 
     marginRight: 10,
     maxHeight: 120 
@@ -341,5 +277,6 @@ const styles = StyleSheet.create({
   timerText: { color: '#0f0', fontWeight: 'bold', fontSize: 14 },
   sendBtn: { backgroundColor: '#0f0', paddingHorizontal: 15, paddingVertical: 10, borderRadius: 20 },
   disabledBtn: { backgroundColor: '#333' },
-  sendBtnText: { color: '#000', fontWeight: 'bold' }
+  sendBtnText: { color: '#000', fontWeight: 'bold' },
+  headerTitle: { color: '#0f0', fontSize: 18, fontWeight: 'bold' }
 });

@@ -64,22 +64,17 @@ export const KDF_CK = async (ck: Uint8Array): Promise<[Uint8Array, Uint8Array]> 
 // Initializes the state for the entity that initiates the session (Alice)
 export const initRatchetSender = async (sharedSecret: Uint8Array, bobPublicKey: Uint8Array): Promise<RatchetState> => {
   await sodium.ready;
-  // Generate a new ephemeral ratchet key pair for Alice
+  // Alice starts with a fresh ratchet key pair
   const DHs = sodium.crypto_box_keypair();
   const DHr = bobPublicKey;
 
-  // Perform DH exchange: ECDH(DHs.privateKey, DHr)
-  // Libsodium box keypair creates X25519 keys natively
-  const dhOut = await performKeyExchange(DHs.privateKey, DHr);
-
-  // Derive initial RK and CKs
-  const [RK, CKs] = await KDF_RK(sharedSecret, dhOut);
-
+  // Alice starts at RK0 with NO sending chain yet.
+  // She will derive CKs when she sends her first message, which will trigger a DH ratchet step.
   return {
     DHs,
     DHr,
-    RK,
-    CKs,
+    RK: sharedSecret,
+    CKs: null,
     CKr: null,
     Ns: 0,
     Nr: 0,
@@ -104,29 +99,32 @@ export const initRatchetReceiver = async (sharedSecret: Uint8Array, bobRatchetKe
   };
 };
 
-// Perform a DH Ratchet step (Receiver flips to sending, derives new keys)
+// Perform a DH Ratchet step (called when receiving a message with a new DH key)
 export const ratchetStep = async (state: RatchetState, remotePublicKey: Uint8Array): Promise<RatchetState> => {
   await sodium.ready;
-  const newState = { ...state };
+  const newState: RatchetState = { 
+    ...state,
+    MKsKIPPED: { ...state.MKsKIPPED } 
+  };
   newState.PN = state.Ns;
   newState.Ns = 0;
   newState.Nr = 0;
   newState.DHr = remotePublicKey;
 
-  // 1. Derive receiving chain keys using our CURRENT DHs private key and NEW remote public key
-  const dhReceiving = await performKeyExchange(state.DHs.privateKey, newState.DHr);
-  const [newRK1, newCKr] = await KDF_RK(state.RK, dhReceiving);
-  newState.RK = newRK1;
-  newState.CKr = newCKr;
+  // 1. Advance Root Chain to derive new receiving chain (CKr)
+  // Logic: RK, CKr = KDF_RK(RK, DH(DHs, DHr))
+  const dhReceiving = await performKeyExchange(state.DHs.privateKey, newState.DHr!);
+  const [rk1, ckr] = await KDF_RK(state.RK, dhReceiving);
+  newState.RK = rk1;
+  newState.CKr = ckr;
 
-  // 2. Generate our NEXT DHs key pair
+  // 2. Generate NEW local DH key and advance Root Chain to derive new sending chain (CKs)
+  // Logic: DHs = GENERATE_DH(), RK, CKs = KDF_RK(RK, DH(DHs, DHr))
   newState.DHs = sodium.crypto_box_keypair();
-
-  // 3. Derive sending chain keys using our NEW DHs private key and NEW remote public key
-  const dhSending = await performKeyExchange(newState.DHs.privateKey, newState.DHr);
-  const [newRK2, newCKs] = await KDF_RK(newState.RK, dhSending);
-  newState.RK = newRK2;
-  newState.CKs = newCKs;
+  const dhSending = await performKeyExchange(newState.DHs.privateKey, newState.DHr!);
+  const [rk2, cks] = await KDF_RK(newState.RK, dhSending);
+  newState.RK = rk2;
+  newState.CKs = cks;
 
   return newState;
 };
@@ -143,10 +141,22 @@ export const ratchetEncrypt = async (
   associatedData: Uint8Array | null = null
 ): Promise<{ state: RatchetState; header: RatchetMessageHeader; ciphertext: Uint8Array }> => {
   await sodium.ready;
-  const newState = { ...state };
+  let newState: RatchetState = { 
+    ...state,
+    MKsKIPPED: { ...state.MKsKIPPED } 
+  };
   
+  // If we don't have a sending chain key (e.g. Alice just initialized, or Bob just received),
+  // we must advance the DH ratchet to get a sending chain.
   if (!newState.CKs) {
-      throw new Error("Double Ratchet sending chain key not initialized");
+      if (!newState.DHr) {
+          throw new Error("Cannot encrypt: remote ratchet key (DHr) unknown");
+      }
+      // Advance sending chain using our CURRENT keys
+      const dhSending = await performKeyExchange(newState.DHs.privateKey, newState.DHr);
+      const [rk, cks] = await KDF_RK(newState.RK, dhSending);
+      newState.RK = rk;
+      newState.CKs = cks;
   }
   
   // Evolve sending chain
@@ -181,12 +191,34 @@ export const ratchetDecrypt = async (
   associatedData: Uint8Array | null = null
 ): Promise<{ state: RatchetState; plaintext: Uint8Array }> => {
   await sodium.ready;
-  let newState = { ...state };
+  let newState: RatchetState = { 
+    ...state,
+    MKsKIPPED: { ...state.MKsKIPPED } 
+  };
   
-  // Check if we need to advance the DH ratchet (header DH ratchets over)
-  // simplified logic: if we haven't seen this remote DH public key yet
+  // 1. Check if the message key has already been skipped and stored
+  const keyIdentifier = sodium.to_hex(header.DHs) + ':' + header.n;
+  if (newState.MKsKIPPED[keyIdentifier]) {
+      const mk = newState.MKsKIPPED[keyIdentifier];
+      const nonce = combinedCiphertext.slice(0, sodium.crypto_aead_chacha20poly1305_ietf_NPUBBYTES);
+      const rawCiphertext = combinedCiphertext.slice(sodium.crypto_aead_chacha20poly1305_ietf_NPUBBYTES);
+      
+      const decrypted = await decryptMessage(rawCiphertext, nonce, mk, associatedData);
+      if (!decrypted) {
+          throw new Error("MAC failure with skipped key");
+      }
+      
+      // Remove the used key
+      delete newState.MKsKIPPED[keyIdentifier];
+      return { state: newState, plaintext: decrypted };
+  }
+
+  // 2. Handle DH Ratchet step if the header's DH key is new
   if (!newState.DHr || sodium.compare(header.DHs, newState.DHr) !== 0) {
-      // Step the DH Ratchet
+      // Before stepping the DH ratchet, we must skip all remaining messages in the OLD receiving chain
+      // and store their message keys (if any skipped/future messages were expected)
+      // This is simplified: in a full implementation we'd handle max skip limits.
+      
       newState = await ratchetStep(newState, header.DHs);
   }
   
@@ -194,17 +226,21 @@ export const ratchetDecrypt = async (
       throw new Error("Double Ratchet receiving chain key not initialized");
   }
   
-  // Step the receiving chain until we hit the requested message number (skip old/missing msgs)
-  // Simplified for implementation plan constraints: skipping missing messages properly
+  // 3. Step the receiving chain until we hit the requested message number
   while (newState.Nr < header.n) {
       const [nextCKr, skippedMk] = await KDF_CK(newState.CKr);
       newState.CKr = nextCKr;
-      // Store in skipped keys dict (indexed by pubkey+n)
-      newState.MKsKIPPED[sodium.to_hex(header.DHs) + newState.Nr] = skippedMk;
+      const skippedId = sodium.to_hex(header.DHs) + ':' + newState.Nr;
+      newState.MKsKIPPED[skippedId] = skippedMk;
       newState.Nr++;
+
+      // Safety: dont skip too many keys (DoS protection)
+      if (Object.keys(newState.MKsKIPPED).length > 100) {
+          throw new Error("Too many skipped keys. Security policy violation.");
+      }
   }
   
-  // Evolve the chain one last time for this specific message
+  // 4. Evolve the chain for the current message
   const [nextCKr, mk] = await KDF_CK(newState.CKr);
   newState.CKr = nextCKr;
   newState.Nr++;

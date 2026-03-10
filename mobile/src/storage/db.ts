@@ -10,9 +10,23 @@ export const getAuthToken = async (): Promise<string | null> => {
 };
 
 export const clearAuthToken = async () => {
+    // 1. Clear session tokens
     await SecureStore.deleteItemAsync('auth_token');
     await SecureStore.deleteItemAsync('user_id');
+    
+    // 2. Clear UI settings
     await SecureStore.deleteItemAsync('settings');
+
+    // 3. WIPE SECURITY DATA to prevent cross-account desync
+    // In a production app, we would iterate all keys or use a prefix-aware delete.
+    // For Expo SecureStore, we manually delete known sensitive keys.
+    await SecureStore.deleteItemAsync('identity_key_pub');
+    await SecureStore.deleteItemAsync('identity_key_priv');
+    
+    // Note: To wipe ALL ratchet states and messages, we'd need a way to list keys.
+    // SecureStore doesn't support listing. For this demo, we assume re-login 
+    // means a fresh start for that specific user's logic.
+    console.log("[Storage] Security data wiped for logout");
 };
 
 export const saveSettings = async (settings: any) => {
@@ -63,6 +77,11 @@ export const getRatchetState = async (peerId: string): Promise<RatchetState | nu
     });
     
     return parsed as RatchetState;
+};
+
+export const resetRatchetState = async (peerId: string) => {
+    await SecureStore.deleteItemAsync(`ratchet_state_${peerId}`);
+    console.log(`[Storage] Ratchet state reset for peer: ${peerId}`);
 };
 
 export interface LocalMessage {

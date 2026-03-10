@@ -2,7 +2,7 @@ import axios from 'axios';
 import { getAuthToken } from '../storage/db';
 import * as SecureStore from 'expo-secure-store';
 
-export const API_URL = 'http://172.20.10.8:3000/api'; // Physical Device local IPv4
+export const API_URL = 'http://10.97.225.183:3000/api'; // Physical Device local IPv4
 
 export const apiClient = axios.create({
     baseURL: API_URL,

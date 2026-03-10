@@ -5,9 +5,15 @@ import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { LoginScreen, SearchUsersScreen, ChatScreen, SettingsScreen } from './src/screens';
 import { PrivacyShield } from './src/components/PrivacyShield';
 
+import { messageService } from './src/services/MessageService';
+
 const Stack = createNativeStackNavigator();
 
 const App = () => {
+  React.useEffect(() => {
+    messageService.init();
+  }, []);
+
   return (
     <PrivacyShield>
       <NavigationContainer>
