@@ -61,15 +61,17 @@ export const KDF_CK = async (ck: Uint8Array): Promise<[Uint8Array, Uint8Array]> 
   return [nextCK, mk];
 };
 
-// Initializes the state for the entity that initiates the session (Alice)
 export const initRatchetSender = async (sharedSecret: Uint8Array, bobPublicKey: Uint8Array): Promise<RatchetState> => {
   await sodium.ready;
   // Alice starts with a fresh ratchet key pair
   const DHs = sodium.crypto_box_keypair();
   const DHr = bobPublicKey;
 
+  console.log(`[Ratchet] initRatchetSender: DHr length is ${DHr ? DHr.length : 'undefined'}`);
+
   // Alice starts at RK0 with NO sending chain yet.
   // She will derive CKs when she sends her first message, which will trigger a DH ratchet step.
+  console.log(`[Ratchet] Sender Init - RK: ${sodium.to_hex(sharedSecret).substring(0, 8)}..., DHs: ${sodium.to_hex(DHs.publicKey).substring(0, 8)}...`);
   return {
     DHs,
     DHr,
@@ -86,6 +88,7 @@ export const initRatchetSender = async (sharedSecret: Uint8Array, bobPublicKey: 
 // Initializes the state for the entity that responds to the session (Bob)
 export const initRatchetReceiver = async (sharedSecret: Uint8Array, bobRatchetKeyPair: KeyPair): Promise<RatchetState> => {
   await sodium.ready;
+  console.log(`[Ratchet] Receiver Init - RK: ${sodium.to_hex(sharedSecret).substring(0, 8)}..., DHs: ${sodium.to_hex(bobRatchetKeyPair.publicKey).substring(0, 8)}...`);
   return {
     DHs: bobRatchetKeyPair,
     DHr: null,
@@ -126,6 +129,7 @@ export const ratchetStep = async (state: RatchetState, remotePublicKey: Uint8Arr
   newState.RK = rk2;
   newState.CKs = cks;
 
+  console.log(`[Ratchet] STEP - New RK: ${sodium.to_hex(newState.RK).substring(0, 8)}..., Ns: ${newState.Ns}, Nr: ${newState.Nr}`);
   return newState;
 };
 
@@ -149,8 +153,9 @@ export const ratchetEncrypt = async (
   // If we don't have a sending chain key (e.g. Alice just initialized, or Bob just received),
   // we must advance the DH ratchet to get a sending chain.
   if (!newState.CKs) {
-      if (!newState.DHr) {
-          throw new Error("Cannot encrypt: remote ratchet key (DHr) unknown");
+      console.log(`[Ratchet] ratchetEncrypt: DHr is ${newState.DHr ? 'present (len:' + newState.DHr.length + ')' : 'null/undefined'}`);
+      if (!newState.DHr || newState.DHr.length === 0) {
+          throw new Error("Cannot encrypt: remote ratchet key (DHr) unknown or empty");
       }
       // Advance sending chain using our CURRENT keys
       const dhSending = await performKeyExchange(newState.DHs.privateKey, newState.DHr);

@@ -1,10 +1,8 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { View, Text, TextInput, Button, FlatList, StyleSheet, KeyboardAvoidingView, Platform, TouchableOpacity, Keyboard } from 'react-native';
+import { View, Text, TextInput, FlatList, StyleSheet, KeyboardAvoidingView, Platform, TouchableOpacity, Keyboard } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
-import { createHandshakeInit } from '../crypto/handshake';
-import { getIdentityKeyPair, generateIdentityKeyPair } from '../crypto/keys';
-import { socketService } from '../services/socket';
-import { getRatchetState, saveRatchetState, getChatMessages, saveChatMessage, LocalMessage, getUserId, deleteChatMessage } from '../storage/db';
+import { getIdentityKeyPair } from '../crypto/keys';
+import { getRatchetState, getChatMessages, saveChatMessage, getUserId, deleteChatMessage } from '../storage/db';
 import sodium from 'libsodium-wrappers';
 import { messageService } from '../services/MessageService';
 
@@ -24,10 +22,10 @@ export const ChatScreen = ({ route }: any) => {
   const [statusMessage, setStatusMessage] = useState('Checking security...');
   const [timer, setTimer] = useState<number>(0); 
   const insets = useSafeAreaInsets();
+  const [keyboardVisible, setKeyboardVisible] = useState(false);
   const myKeysRef = useRef<any>(null);
   const myIdRef = useRef<string | null>(null);
-
-  const [keyboardVisible, setKeyboardVisible] = useState(false);
+  const flatListRef = useRef<FlatList>(null);
 
   useEffect(() => {
     const keyboardDidShowListener = Keyboard.addListener(
@@ -39,52 +37,44 @@ export const ChatScreen = ({ route }: any) => {
       () => setKeyboardVisible(false)
     );
 
-    // 1. Initialize Sodium and load any existing Ratchet state + messages from DB
-    const initChat = async () => {
+    // 1. Initialize: ensure session + load messages
+    (async () => {
       await sodium.ready;
 
-      myIdRef.current = await getUserId();
-      let keys = await getIdentityKeyPair();
-      if (!keys) {
-          keys = await generateIdentityKeyPair();
-      }
+      const keys = await getIdentityKeyPair();
       myKeysRef.current = keys;
-      
-      const loadedState = await getRatchetState(peerId);
-      if (loadedState) {
+      const myId = await getUserId();
+      myIdRef.current = myId;
+
+      // Load stored messages immediately
+      const storedMsgs = await getChatMessages(peerId);
+      setMessages(storedMsgs.map(m => ({
+          ...m,
+          timestamp: new Date(m.timestamp)
+      })));
+
+      // Establish session (will be instant if already exists, or handshake if not)
+      setStatusMessage('Establishing secure channel...');
+      const ready = await messageService.ensureSession(peerId);
+      if (ready) {
           setSessionActive(true);
           setStatusMessage('');
       } else {
-          setStatusMessage('Initiating secure handshake...');
-          // Generate fresh ephemeral ratchet key for this session
-          const ratchetKeys = sodium.crypto_box_keypair();
-          const handshake = await createHandshakeInit(myIdRef.current!, peerId, keys, ratchetKeys);
-          socketService.sendHandshake(peerId, handshake);
+          setStatusMessage('Waiting for peer to come online...');
       }
+    })();
 
-      const storedMsgs = await getChatMessages(peerId);
-      if (storedMsgs.length > 0) {
-          setMessages(storedMsgs.map(m => ({
-              ...m,
-              timestamp: new Date(m.timestamp)
-          })));
-      }
-    };
-    
-    initChat();
-
-
+    // 2. UI listener: refresh messages + session status whenever MessageService processes something
     const loadMessages = async () => {
-        // 1. Reload Ratchet State to see if a background handshake finished
         const loadedState = await getRatchetState(peerId);
         if (loadedState) {
-            if (!sessionActive) {
-                setSessionActive(true);
-                setStatusMessage('');
-            }
+            setSessionActive(true);
+            setStatusMessage('');
+        } else {
+            setSessionActive(false);
+            setStatusMessage('Re-establishing secure channel...');
         }
 
-        // 2. Load messages
         const storedMsgs = await getChatMessages(peerId);
         setMessages(storedMsgs.map(m => ({
             ...m,
@@ -116,13 +106,14 @@ export const ChatScreen = ({ route }: any) => {
   }, []);
 
   const sendMessage = async () => {
-    if (!inputText.trim() || !sessionActive) return;
+    if (!inputText.trim()) return;
     const plaintext = inputText.trim();
     setInputText('');
-    
+
     try {
+        // ensureSession is called inside encryptAndSendMessage — it will auto-establish if needed
         await messageService.encryptAndSendMessage(peerId, plaintext, timer);
-        
+
         let expiresAt: string | undefined;
         if (timer > 0) {
             expiresAt = new Date(Date.now() + timer * 1000).toISOString();
@@ -143,9 +134,18 @@ export const ChatScreen = ({ route }: any) => {
         });
 
         setMessages(prev => [...prev, newMsg]);
-
+        setSessionActive(true);
+        setStatusMessage('');
     } catch(e) {
-       console.error("Encryption failed:", e); 
+       console.error("Send failed:", e);
+       setStatusMessage('Send failed. Retrying...');
+       // Try to re-establish for next attempt
+       messageService.ensureSession(peerId).then(ready => {
+           if (ready) {
+               setSessionActive(true);
+               setStatusMessage('');
+           }
+       });
     }
   };
 
@@ -177,9 +177,9 @@ export const ChatScreen = ({ route }: any) => {
   return (
     <SafeAreaView style={styles.container} edges={['top', 'left', 'right']}>
       <KeyboardAvoidingView 
-        behavior={Platform.OS === 'ios' ? 'padding' : 'padding'}
-        style={styles.keyboardView}
-        keyboardVerticalOffset={Platform.OS === 'ios' ? 90 : 25}
+        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+        style={{ flex: 1 }}
+        keyboardVerticalOffset={Platform.OS === 'ios' ? 90 : 0}
       >
         <View style={styles.header}>
             <Text style={styles.headerTitle}>{peerUsername}</Text>
@@ -199,7 +199,8 @@ export const ChatScreen = ({ route }: any) => {
         )}
 
         <FlatList
-          data={[...messages].reverse()} // Reverse for inverted list
+          ref={flatListRef}
+          data={[...messages].reverse()}
           keyExtractor={item => item.id}
           renderItem={renderItem}
           contentContainerStyle={styles.messageList}

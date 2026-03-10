@@ -22,7 +22,9 @@ export const generateIdentityKeyPair = async (): Promise<KeyPair> => {
         privateKey: Array.from(privateKey)
     });
     
-    await SecureStore.setItemAsync('identity_keys', keyData);
+    const userId = await SecureStore.getItemAsync('user_id');
+    const key = userId ? `identity_keys_${userId}` : 'identity_keys';
+    await SecureStore.setItemAsync(key, keyData);
 
     return { publicKey, privateKey };
 };
@@ -30,7 +32,9 @@ export const generateIdentityKeyPair = async (): Promise<KeyPair> => {
 export const getIdentityKeyPair = async (): Promise<KeyPair | null> => {
     await sodium.ready;
     try {
-        const credentials = await SecureStore.getItemAsync('identity_keys');
+        const userId = await SecureStore.getItemAsync('user_id');
+        const key = userId ? `identity_keys_${userId}` : 'identity_keys';
+        const credentials = await SecureStore.getItemAsync(key);
         if (credentials) {
             const parsed = JSON.parse(credentials);
             return {

@@ -69,6 +69,7 @@ export const setupWebSocket = (server: Server) => {
 
                         if (recipientWs && recipientWs.readyState === WebSocket.OPEN) {
                             // Relay strictly as-is to recipient
+                            console.log(`[Socket] Relaying ${payload.type} from ${ws.userId} to ${payload.recipientId}`);
                             recipientWs.send(JSON.stringify({
                                 ...payload,
                                 senderId: ws.userId
@@ -79,11 +80,7 @@ export const setupWebSocket = (server: Server) => {
                                 await OfflineMessage.create({
                                     recipientId: new Types.ObjectId(payload.recipientId as string),
                                     senderId: new Types.ObjectId(ws.userId as string),
-                                    encryptedPayload: JSON.stringify({ 
-                                        type: payload.type,
-                                        ciphertext: payload.ciphertext, 
-                                        header: payload.header 
-                                    })
+                                    encryptedPayload: JSON.stringify(payload)
                                 } as any);
                             }
                         }

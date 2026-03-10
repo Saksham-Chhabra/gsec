@@ -4,7 +4,7 @@ import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
 import { apiClient } from '../services/api';
 import { socketService } from '../services/socket';
 import { saveAuthToken, saveUserId } from '../storage/db';
-import { generateIdentityKeyPair, getIdentityKeyPair } from '../crypto/keys';
+import { generateIdentityKeyPair } from '../crypto/keys';
 
 export const LoginScreen = ({ navigation }: any) => {
     const [username, setUsername] = useState('');
@@ -48,12 +48,10 @@ export const LoginScreen = ({ navigation }: any) => {
             await saveAuthToken(token);
             await saveUserId(userId);
 
-            // Ensure we have identity keys generated
-            const existingKeys = await getIdentityKeyPair();
-            if (!existingKeys) {
-                console.log("Generating new identity keys for user...");
-                await generateIdentityKeyPair();
-            }
+            // ALWAYS generate fresh identity keys on login to ensure clean crypto state.
+            // Old ratchet states from previous sessions are incompatible after key regen.
+            console.log("[Login] Generating fresh identity keys for clean session...");
+            await generateIdentityKeyPair();
 
             Alert.alert("Success", "Logged in successfully!");
             socketService.connect(); // Connect immediately after login

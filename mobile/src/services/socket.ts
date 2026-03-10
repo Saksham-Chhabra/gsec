@@ -34,11 +34,9 @@ class WebSocketService {
         this.ws.onmessage = (event) => {
             try {
                 const data = JSON.parse(event.data);
-                if (data.type === 'chat_message') {
-                    // Route to UI / Ratchet engine
-                    this.messageListeners.forEach(listener => listener(data));
-                } else if (data.type === 'key_exchange' || data.type === 'key_exchange_response') {
-                    // Route handshake messages to the same listeners
+                console.log(`[Socket] Received: ${data.type} from ${data.senderId || 'unknown'}`);
+                
+                if (data.type === 'chat_message' || data.type === 'key_exchange' || data.type === 'key_exchange_response') {
                     this.messageListeners.forEach(listener => listener(data));
                 }
             } catch (error) {
@@ -48,9 +46,18 @@ class WebSocketService {
 
         this.ws.onclose = (event) => {
             this.isConnecting = false;
-            console.log(`WebSocket Disconnected (Code: ${event.code}, Reason: ${event.reason}). Reconnecting in 5s...`);
+
+            // If auth failed (4001), the token is invalid — don't retry forever
+            if (event.code === 4001) {
+                console.error(`WebSocket rejected: Token invalid or expired. Please re-login.`);
+                // Clear the interval to avoid spam
+                if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+                return;
+            }
+
+            console.log(`WebSocket Disconnected (Code: ${event.code}). Reconnecting in 5s...`);
             if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
-            this.reconnectTimer = setTimeout(() => this.connect(), 5000); // Auto-reconnect
+            this.reconnectTimer = setTimeout(() => this.connect(), 5000);
         };
         
         this.ws.onerror = (e) => {

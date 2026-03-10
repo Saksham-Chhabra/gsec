@@ -47,40 +47,63 @@ export const getUserId = async (): Promise<string | null> => {
 };
 
 // Store securely in a real app (with react-native-mmkv or encrypted storage), using AsyncStorage for dev
+// Store securely in a real app (with react-native-mmkv or encrypted storage), using AsyncStorage for dev
 // We specifically store the RatchetState mapped to the peer's user ID so we can resume chats.
 export const saveRatchetState = async (peerId: string, state: RatchetState) => {
-    // Ratchet state contains Uint8Arrays. We must serialize them to base64 or arrays before saving.
-    // For simplicity of this module outline, we'll store JSON and assume the consumer maps it correctly,
-    // or we build a proper replacer/reviver. We use `Buffer` or custom array conversion.
-    // Given libsodium uses Uint8Array, we convert to standard arrays for JSON compatibility.
+    // Explicitly serialize known buffer fields to avoid React Native JSON quirks
+    const serializedState = {
+        DHs: {
+            publicKey: Array.from(state.DHs.publicKey),
+            privateKey: Array.from(state.DHs.privateKey)
+        },
+        DHr: state.DHr ? Array.from(state.DHr) : null,
+        RK: Array.from(state.RK),
+        CKs: state.CKs ? Array.from(state.CKs) : null,
+        CKr: state.CKr ? Array.from(state.CKr) : null,
+        Ns: state.Ns,
+        Nr: state.Nr,
+        PN: state.PN,
+        MKsKIPPED: Object.fromEntries(
+            Object.entries(state.MKsKIPPED).map(([k, v]) => [k, Array.from(v)])
+        )
+    };
     
-    // A production-grade implementation would have a robust encoding map here.
-    const serialized = JSON.stringify(state, (key, value) => {
-        if (value instanceof Uint8Array) {
-            return { type: 'Uint8Array', data: Array.from(value) };
-        }
-        return value;
-    });
-    
-    await SecureStore.setItemAsync(`ratchet_state_${peerId}`, serialized);
+    const userId = await SecureStore.getItemAsync('user_id');
+    const storageKey = userId ? `ratchet_state_${userId}_${peerId}` : `ratchet_state_${peerId}`;
+    await SecureStore.setItemAsync(storageKey, JSON.stringify(serializedState));
 };
 
 export const getRatchetState = async (peerId: string): Promise<RatchetState | null> => {
-    const data = await SecureStore.getItemAsync(`ratchet_state_${peerId}`);
+    const userId = await SecureStore.getItemAsync('user_id');
+    const storageKey = userId ? `ratchet_state_${userId}_${peerId}` : `ratchet_state_${peerId}`;
+    const data = await SecureStore.getItemAsync(storageKey);
     if (!data) return null;
 
-    const parsed = JSON.parse(data, (key, value) => {
-        if (value && value.type === 'Uint8Array' && Array.isArray(value.data)) {
-            return new Uint8Array(value.data);
-        }
-        return value;
-    });
+    const parsed = JSON.parse(data);
     
-    return parsed as RatchetState;
+    // Explicitly deserialize
+    return {
+        DHs: {
+            publicKey: new Uint8Array(parsed.DHs.publicKey),
+            privateKey: new Uint8Array(parsed.DHs.privateKey)
+        },
+        DHr: parsed.DHr ? new Uint8Array(parsed.DHr) : null,
+        RK: new Uint8Array(parsed.RK),
+        CKs: parsed.CKs ? new Uint8Array(parsed.CKs) : null,
+        CKr: parsed.CKr ? new Uint8Array(parsed.CKr) : null,
+        Ns: parsed.Ns,
+        Nr: parsed.Nr,
+        PN: parsed.PN,
+        MKsKIPPED: Object.fromEntries(
+            Object.entries(parsed.MKsKIPPED || {}).map(([k, v]) => [k, new Uint8Array(v as number[])])
+        )
+    };
 };
 
 export const resetRatchetState = async (peerId: string) => {
-    await SecureStore.deleteItemAsync(`ratchet_state_${peerId}`);
+    const userId = await SecureStore.getItemAsync('user_id');
+    const storageKey = userId ? `ratchet_state_${userId}_${peerId}` : `ratchet_state_${peerId}`;
+    await SecureStore.deleteItemAsync(storageKey);
     console.log(`[Storage] Ratchet state reset for peer: ${peerId}`);
 };
 
@@ -93,7 +116,8 @@ export interface LocalMessage {
 }
 
 export const saveChatMessage = async (peerId: string, message: LocalMessage) => {
-    const key = `messages_${peerId}`;
+    const userId = await SecureStore.getItemAsync('user_id');
+    const key = userId ? `messages_${userId}_${peerId}` : `messages_${peerId}`;
     const existing = await SecureStore.getItemAsync(key);
     const messages: LocalMessage[] = existing ? JSON.parse(existing) : [];
     
@@ -103,15 +127,21 @@ export const saveChatMessage = async (peerId: string, message: LocalMessage) => 
     // For a real app, use MMKV or SQLite. For this demo, we'll store the recent 20 messages.
     const limited = messages.slice(-20);
     await SecureStore.setItemAsync(key, JSON.stringify(limited));
+    console.log(`[DB] saveChatMessage - Key: ${key}, New Size: ${limited.length}`);
 };
 
 export const getChatMessages = async (peerId: string): Promise<LocalMessage[]> => {
-    const data = await SecureStore.getItemAsync(`messages_${peerId}`);
-    return data ? JSON.parse(data) : [];
+    const userId = await SecureStore.getItemAsync('user_id');
+    const key = userId ? `messages_${userId}_${peerId}` : `messages_${peerId}`;
+    const data = await SecureStore.getItemAsync(key);
+    const msgs = data ? JSON.parse(data) : [];
+    console.log(`[DB] getChatMessages - Key: ${key}, Loaded: ${msgs.length}`);
+    return msgs;
 };
 
 export const deleteChatMessage = async (peerId: string, messageId: string) => {
-    const key = `messages_${peerId}`;
+    const userId = await SecureStore.getItemAsync('user_id');
+    const key = userId ? `messages_${userId}_${peerId}` : `messages_${peerId}`;
     const data = await SecureStore.getItemAsync(key);
     if (!data) return;
     

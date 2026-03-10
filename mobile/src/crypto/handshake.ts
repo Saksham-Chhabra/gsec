@@ -5,7 +5,7 @@ import { initRatchetSender, initRatchetReceiver, RatchetState } from './ratchet'
 export interface HandshakeMessage {
     type: 'key_exchange' | 'key_exchange_response';
     senderId: string;
-    recipientId: string; // Added to make it deterministic
+    recipientId: string;
     identityPublicKey: Array<number>;
     ratchetPublicKey: Array<number>;
 }
@@ -46,50 +46,60 @@ export const processHandshake = async (
     remoteHandshake: HandshakeMessage,
     myIdentityKeyPair: KeyPair,
     myRatchetKeyPair: KeyPair,
-    isInitiator: boolean
+    _isInitiator: boolean // kept for API compatibility but not used
 ): Promise<{ state: RatchetState; sharedSecret: Uint8Array }> => {
     await sodium.ready;
-    
+
     const remoteIdentityPub = new Uint8Array(remoteHandshake.identityPublicKey);
     const remoteRatchetPub = new Uint8Array(remoteHandshake.ratchetPublicKey);
 
-    // 1. Perform 3DH: Triple Diffie-Hellman
+    // Derive myId and peerId deterministically from the handshake message
+    // recipientId = the person this message was SENT TO (me)
+    // senderId    = the person who sent this message (peer)
+    const myId: string = remoteHandshake.recipientId;
+    const peerId: string = remoteHandshake.senderId;
+
+    // Compute 3DH shared secret components
     // dh1 = Identity_Self * Ratchet_Remote
-    // dh2 = Ratchet_Self * Identity_Remote
-    // dh3 = Ratchet_Self * Ratchet_Remote
+    // dh2 = Ratchet_Self  * Identity_Remote
+    // dh3 = Ratchet_Self  * Ratchet_Remote
     const dh1 = sodium.crypto_scalarmult(myIdentityKeyPair.privateKey, remoteRatchetPub);
-    const dh2 = sodium.crypto_scalarmult(myRatchetKeyPair.privateKey, remoteIdentityPub);
-    const dh3 = sodium.crypto_scalarmult(myRatchetKeyPair.privateKey, remoteRatchetPub);
-    
-    // 2. Combine DH outputs to form the root shared secret DETERMINISTICALLY
-    // We order components based on ID comparison so both parties land on same buffer.
-    // Alice (A) < Bob (B)
-    // Alice view: dh1 = IA*RB, dh2 = RA*IB, dh3 = RA*RB
-    // Bob view:   dh1 = IB*RA, dh2 = RB*IA, dh3 = RB*RA
-    // Note: dh1_Alice == dh2_Bob, dh2_Alice == dh1_Bob, dh3_Alice == dh3_Bob
-    
+    const dh2 = sodium.crypto_scalarmult(myRatchetKeyPair.privateKey,  remoteIdentityPub);
+    const dh3 = sodium.crypto_scalarmult(myRatchetKeyPair.privateKey,  remoteRatchetPub);
+
+    // Combine DH outputs deterministically — ALWAYS order as (smaller_id, larger_id)
+    // Alice (smaller ID):  [dh1_A=IA*RB, dh2_A=RA*IB, dh3_A=RA*RB]
+    // Bob   (larger  ID):  [dh2_B=IB*RA, dh1_B=RB*IA, dh3_B=RB*RA]  (swapped to match Alice)
+    // dh1_A == dh2_B,  dh2_A == dh1_B,  dh3_A == dh3_B  (DH symmetry)
     const combined = new Uint8Array(96);
-    const myId = remoteHandshake.recipientId;
-    const peerId = remoteHandshake.senderId;
-
     if (myId < peerId) {
-        combined.set(dh1);
-        combined.set(dh2, 32);
-        combined.set(dh3, 64);
+        // I am Alice (smaller ID) — natural order
+        combined.set(dh1,     0);
+        combined.set(dh2,    32);
+        combined.set(dh3,    64);
     } else {
-        combined.set(dh2); // dh2_Bob == dh1_Alice
-        combined.set(dh1, 32); // dh1_Bob == dh2_Alice
-        combined.set(dh3, 64); // dh3_Bob == dh3_Alice
+        // I am Bob (larger ID) — swap dh1/dh2 so both sides produce same buffer
+        combined.set(dh2,     0); // dh2_Bob == dh1_Alice
+        combined.set(dh1,    32); // dh1_Bob == dh2_Alice
+        combined.set(dh3,    64); // dh3 is symmetric
     }
-    
-    const sharedSecret = sodium.crypto_generichash(32, combined, new Uint8Array(0));
 
+    const sharedSecret = sodium.crypto_generichash(32, combined, new Uint8Array(0));
+    console.log(`[Handshake] Shared secret derived: ${sodium.to_hex(sharedSecret).substring(0, 8)}... myId=${myId.slice(-4)} peerId=${peerId.slice(-4)}`);
+
+    // DETERMINISTIC ROLE ASSIGNMENT — based purely on userId ordering
+    // This guarantees that no matter who sends the first message or how
+    // many handshakes fly back and forth, both parties always agree on:
+    //   smaller ID => Alice (sender/initiator) => initRatchetSender
+    //   larger  ID => Bob   (receiver)         => initRatchetReceiver
     let state: RatchetState;
-    if (isInitiator) {
-        // Alice starts by providing Bob's Ratchet Pub from handshake
+    if (myId < peerId) {
+        // I am Alice — I know Bob's ratchet public key from the handshake
+        console.log(`[Handshake] I am SENDER (Alice). DHr = remote ratchet key`);
         state = await initRatchetSender(sharedSecret, remoteRatchetPub);
     } else {
-        // Bob starts with his OWN Ratchet key pair that he sent in the handshake
+        // I am Bob — I use my OWN identity key as the initial ratchet key
+        console.log(`[Handshake] I am RECEIVER (Bob). DHs = my identity key`);
         state = await initRatchetReceiver(sharedSecret, myRatchetKeyPair);
     }
 
