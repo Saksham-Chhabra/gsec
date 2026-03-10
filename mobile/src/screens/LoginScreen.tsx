@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
-import { View, Text, TextInput, Button, StyleSheet, Alert, SafeAreaView, TouchableOpacity } from 'react-native';
+import { View, Text, TextInput, Button, StyleSheet, Alert, TouchableOpacity, KeyboardAvoidingView, Platform, ScrollView } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { apiClient } from '../services/api';
 import { saveAuthToken, saveUserId } from '../storage/db';
 import { generateIdentityKeyPair, getIdentityKeyPair } from '../crypto/keys';
@@ -8,10 +9,22 @@ export const LoginScreen = ({ navigation }: any) => {
     const [username, setUsername] = useState('');
     const [password, setPassword] = useState('');
     const [loading, setLoading] = useState(false);
+    const [showPassword, setShowPassword] = useState(false);
 
     const handleLogin = async () => {
         if (!username || !password) {
-            Alert.alert("Error", "Please enter both username and password");
+            Alert.alert("Error", "Please enter both email and password");
+            return;
+        }
+
+        const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+        if (!emailRegex.test(username)) {
+            Alert.alert("Error", "Please enter a valid email address");
+            return;
+        }
+
+        if (password.length < 8) {
+            Alert.alert("Error", "Password must be at least 8 characters");
             return;
         }
 
@@ -34,7 +47,7 @@ export const LoginScreen = ({ navigation }: any) => {
             navigation.replace('Search');
         } catch (error: any) {
             console.error("Login failed:", error);
-            const msg = error.response?.data?.error || "Invalid credentials or network error";
+            const msg = error.response?.data?.error || "Connection failed. Please check if your computer's IP and phone's Wi-Fi match.";
             Alert.alert("Login Failed", msg);
         } finally {
             setLoading(false);
@@ -43,60 +56,104 @@ export const LoginScreen = ({ navigation }: any) => {
 
     return (
         <SafeAreaView style={styles.container}>
-            <View style={styles.inner}>
-                <Text style={styles.title}>G-SEC Login</Text>
-                <Text style={styles.subtitle}>Secure End-to-End Encrypted Messaging</Text>
-                
-                <TextInput
-                    style={styles.input}
-                    placeholder="Username"
-                    placeholderTextColor="#555"
-                    value={username}
-                    onChangeText={setUsername}
-                    autoCapitalize="none"
-                />
-                
-                <TextInput
-                    style={styles.input}
-                    placeholder="Password"
-                    placeholderTextColor="#555"
-                    value={password}
-                    onChangeText={setPassword}
-                    secureTextEntry
-                />
-                
-                <View style={{ marginTop: 20 }}>
-                     <Button 
-                        title={loading ? "Authenticating..." : "Login"} 
-                        onPress={handleLogin} 
-                        color="#0f0" 
-                        disabled={loading} 
-                    />
-                </View>
+            <KeyboardAvoidingView
+                behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+                style={{ flex: 1 }}
+            >
+                <ScrollView contentContainerStyle={styles.scrollContent} keyboardShouldPersistTaps="handled">
+                    <View style={styles.inner}>
+                        <Text style={styles.title}>G-SEC</Text>
+                        <Text style={styles.subtitle}>Quantum-Resistant Tactical Messaging</Text>
+                        
+                        <View style={styles.inputWrapper}>
+                            <Text style={styles.label}>EMAIL ADDRESS</Text>
+                            <TextInput
+                                style={styles.input}
+                                placeholder="Enter your email"
+                                placeholderTextColor="#333"
+                                value={username}
+                                onChangeText={setUsername}
+                                keyboardType="email-address"
+                                autoCapitalize="none"
+                            />
+                        </View>
+                        
+                        <View style={styles.inputWrapper}>
+                            <Text style={styles.label}>PASSWORD</Text>
+                            <View style={styles.passwordContainer}>
+                                <TextInput
+                                    style={styles.passwordInput}
+                                    placeholder="Enter password"
+                                    placeholderTextColor="#333"
+                                    value={password}
+                                    onChangeText={setPassword}
+                                    secureTextEntry={!showPassword}
+                                />
+                                <TouchableOpacity onPress={() => setShowPassword(!showPassword)} style={styles.toggleBtn}>
+                                    <Text style={styles.toggleText}>{showPassword ? "HIDE" : "SHOW"}</Text>
+                                </TouchableOpacity>
+                            </View>
+                        </View>
+                        
+                        <TouchableOpacity 
+                            style={[styles.loginBtn, loading && styles.loginBtnDisabled]} 
+                            onPress={handleLogin} 
+                            disabled={loading}
+                        >
+                            <Text style={styles.loginBtnText}>{loading ? "AUTHENTICATING..." : "LOGIN TO SECURE NET"}</Text>
+                        </TouchableOpacity>
 
-                <TouchableOpacity style={{ marginTop: 20 }}>
-                    <Text style={{ color: '#888', textAlign: 'center' }}>
-                        Don't have an account? (Seed users Alice/Bob with password: password123)
-                    </Text>
-                </TouchableOpacity>
-            </View>
+                        <Text style={styles.seedHint}>
+                            Compatible with seeded accounts: dhimansabhya@gmail.com
+                        </Text>
+                    </View>
+                </ScrollView>
+            </KeyboardAvoidingView>
         </SafeAreaView>
     );
 };
 
 const styles = StyleSheet.create({
     container: { flex: 1, backgroundColor: '#000' },
-    inner: { flex: 1, padding: 20, justifyContent: 'center' },
-    title: { color: '#0f0', fontSize: 32, fontWeight: 'bold', marginBottom: 10, textAlign: 'center' },
-    subtitle: { color: '#888', fontSize: 16, marginBottom: 30, textAlign: 'center' },
+    scrollContent: { flexGrow: 1, justifyContent: 'center' },
+    inner: { padding: 30 },
+    title: { color: '#0f0', fontSize: 48, fontWeight: '900', textAlign: 'center', letterSpacing: 5 },
+    subtitle: { color: '#444', fontSize: 12, marginBottom: 40, textAlign: 'center', textTransform: 'uppercase', letterSpacing: 2 },
+    inputWrapper: { marginBottom: 20 },
+    label: { color: '#0f0', fontSize: 10, fontWeight: 'bold', marginBottom: 8, marginLeft: 4 },
     input: {
-        backgroundColor: '#111',
+        backgroundColor: '#0a0a0a',
         color: '#fff',
-        padding: 15,
-        borderRadius: 10,
-        fontSize: 18,
+        padding: 16,
+        borderRadius: 4,
+        fontSize: 16,
         borderWidth: 1,
-        borderColor: '#333',
-        marginBottom: 15
-    }
+        borderColor: '#1a1a1a',
+    },
+    passwordContainer: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        backgroundColor: '#0a0a0a',
+        borderRadius: 4,
+        borderWidth: 1,
+        borderColor: '#1a1a1a',
+    },
+    passwordInput: {
+        flex: 1,
+        color: '#fff',
+        padding: 16,
+        fontSize: 16,
+    },
+    toggleBtn: { padding: 16 },
+    toggleText: { color: '#0f0', fontSize: 12, fontWeight: 'bold' },
+    loginBtn: {
+        backgroundColor: '#0f0',
+        padding: 18,
+        borderRadius: 4,
+        alignItems: 'center',
+        marginTop: 10,
+    },
+    loginBtnDisabled: { backgroundColor: '#003300' },
+    loginBtnText: { color: '#000', fontWeight: '900', fontSize: 16, letterSpacing: 1 },
+    seedHint: { color: '#333', fontSize: 11, textAlign: 'center', marginTop: 30 },
 });

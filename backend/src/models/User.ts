@@ -2,6 +2,7 @@ import { Schema, model, Document } from 'mongoose';
 
 export interface IUser extends Document {
     username: string;
+    email: string;
     passwordHash: string;
     identityKeyPublic: string;
     createdAt: Date;
@@ -9,6 +10,7 @@ export interface IUser extends Document {
 
 const UserSchema = new Schema<IUser>({
     username: { type: String, required: true, unique: true, index: true },
+    email: { type: String, required: true, unique: true, index: true },
     passwordHash: { type: String, required: true },
     identityKeyPublic: { type: String, required: true }, // Stored for key exchange
     createdAt: { type: Date, default: Date.now }

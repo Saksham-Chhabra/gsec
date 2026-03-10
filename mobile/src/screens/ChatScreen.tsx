@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { View, Text, TextInput, Button, FlatList, StyleSheet, KeyboardAvoidingView, Platform, SafeAreaView, TouchableOpacity } from 'react-native';
+import { View, Text, TextInput, Button, FlatList, StyleSheet, KeyboardAvoidingView, Platform, TouchableOpacity, Keyboard } from 'react-native';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { ratchetEncrypt, ratchetDecrypt, RatchetState, RatchetMessageHeader } from '../crypto/ratchet';
 import { createHandshakeInit, createHandshakeResponse, processHandshake, HandshakeMessage } from '../crypto/handshake';
 import { getIdentityKeyPair, generateIdentityKeyPair } from '../crypto/keys';
@@ -21,7 +22,8 @@ export const ChatScreen = ({ route }: any) => {
   const [inputText, setInputText] = useState('');
   const [sessionActive, setSessionActive] = useState(false);
   const [statusMessage, setStatusMessage] = useState('Checking security...');
-  const [timer, setTimer] = useState<number>(0); // 0 = disabled
+  const [timer, setTimer] = useState<number>(0); 
+  const insets = useSafeAreaInsets();
   const ratchetStateRef = useRef<RatchetState | null>(null);
   const myKeysRef = useRef<any>(null);
   const myIdRef = useRef<string | null>(null);
@@ -236,24 +238,38 @@ export const ChatScreen = ({ route }: any) => {
   };
 
   return (
-    <SafeAreaView style={styles.container}>
+    <SafeAreaView style={styles.container} edges={['top', 'left', 'right']}>
       <KeyboardAvoidingView 
-        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
         style={styles.keyboardView}
+        keyboardVerticalOffset={Platform.OS === 'ios' ? 90 : 0}
       >
+        <View style={styles.header}>
+            <Text style={styles.headerTitle}>{peerUsername}</Text>
+            {sessionActive ? (
+                <View style={styles.secureBadge}>
+                    <Text style={styles.secureText}>E2EE ACTIVE</Text>
+                </View>
+            ) : (
+                <Text style={styles.statusText}>{statusMessage}</Text>
+            )}
+        </View>
+
         {!sessionActive && (
              <View style={styles.warningBox}>
-                <Text style={styles.warningText}>{statusMessage}</Text>
-                <Text style={styles.subWarning}>Secure P2P Signaling in Progress</Text>
+                <Text style={styles.warningText}>Handshaking...</Text>
              </View>
         )}
+
         <FlatList
-          data={messages}
+          data={[...messages].reverse()} // Reverse for inverted list
           keyExtractor={item => item.id}
           renderItem={renderItem}
           contentContainerStyle={styles.messageList}
+          inverted
         />
-        <View style={styles.inputContainer}>
+
+        <View style={[styles.inputContainer, { paddingBottom: Math.max(insets.bottom, 10) }]}>
           <TouchableOpacity onPress={cycleTimer} style={styles.timerButton}>
              <Text style={styles.timerText}>{timer === 0 ? "∞" : `${timer}s`}</Text>
           </TouchableOpacity>
@@ -261,11 +277,18 @@ export const ChatScreen = ({ route }: any) => {
             style={styles.input}
             value={inputText}
             onChangeText={setInputText}
-            placeholder="Secure message..."
+            placeholder="G-SEC Secure message..."
             placeholderTextColor="#666"
             editable={sessionActive}
+            multiline
           />
-          <Button title="Send" onPress={sendMessage} disabled={!sessionActive || !inputText.trim()} color="#0f0" />
+          <TouchableOpacity 
+            onPress={sendMessage} 
+            disabled={!sessionActive || !inputText.trim()} 
+            style={[styles.sendBtn, (!sessionActive || !inputText.trim()) && styles.disabledBtn]}
+          >
+            <Text style={styles.sendBtnText}>SEND</Text>
+          </TouchableOpacity>
         </View>
       </KeyboardAvoidingView>
     </SafeAreaView>
@@ -275,18 +298,48 @@ export const ChatScreen = ({ route }: any) => {
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#000' },
   keyboardView: { flex: 1 },
-  warningBox: { backgroundColor: '#331111', padding: 15, alignItems: 'center' },
-  warningText: { color: '#ff4444', fontWeight: 'bold' },
-  subWarning: { color: '#aa3333', fontSize: 12 },
-  messageList: { padding: 15, paddingBottom: 20 },
-  messageBubble: { maxWidth: '80%', padding: 12, borderRadius: 16, marginVertical: 4 },
-  senderBubble: { alignSelf: 'flex-end', backgroundColor: '#004d00', borderBottomRightRadius: 4 },
-  receiverBubble: { alignSelf: 'flex-start', backgroundColor: '#333', borderBottomLeftRadius: 4 },
-  messageText: { fontSize: 16, lineHeight: 20 },
-  senderText: { color: '#0f0' },
+  header: { 
+    flexDirection: 'row', 
+    alignItems: 'center', 
+    justifyContent: 'space-between', 
+    padding: 15, 
+    borderBottomWidth: 1, 
+    borderBottomColor: '#222' 
+  },
+  headerTitle: { color: '#fff', fontSize: 18, fontWeight: 'bold' },
+  secureBadge: { backgroundColor: '#004d00', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 10 },
+  secureText: { color: '#0f0', fontSize: 10, fontWeight: 'bold' },
+  statusText: { color: '#888', fontSize: 12 },
+  warningBox: { backgroundColor: '#331111', padding: 8, alignItems: 'center' },
+  warningText: { color: '#ff4444', fontWeight: 'bold', fontSize: 12 },
+  messageList: { padding: 15 },
+  messageBubble: { maxWidth: '85%', padding: 12, borderRadius: 18, marginVertical: 6 },
+  senderBubble: { alignSelf: 'flex-end', backgroundColor: '#0f0', borderBottomRightRadius: 4 },
+  receiverBubble: { alignSelf: 'flex-start', backgroundColor: '#222', borderBottomLeftRadius: 4 },
+  messageText: { fontSize: 16, lineHeight: 22 },
+  senderText: { color: '#000' },
   receiverText: { color: '#fff' },
-  inputContainer: { flexDirection: 'row', padding: 10, borderTopWidth: 1, borderTopColor: '#333', alignItems: 'center' },
-  input: { flex: 1, backgroundColor: '#111', color: '#fff', paddingHorizontal: 15, paddingVertical: 10, borderRadius: 20, marginRight: 10 },
-  timerButton: { padding: 8, backgroundColor: '#222', borderRadius: 20, marginRight: 8, minWidth: 40, alignItems: 'center' },
-  timerText: { color: '#0f0', fontWeight: 'bold' }
+  inputContainer: { 
+    flexDirection: 'row', 
+    padding: 10, 
+    borderTopWidth: 1, 
+    borderTopColor: '#222', 
+    alignItems: 'center',
+    backgroundColor: '#000'
+  },
+  input: { 
+    flex: 1, 
+    backgroundColor: '#111', 
+    color: '#fff', 
+    paddingHorizontal: 15, 
+    paddingVertical: Platform.OS === 'ios' ? 12 : 8, 
+    borderRadius: 22, 
+    marginRight: 10,
+    maxHeight: 120 
+  },
+  timerButton: { padding: 10, backgroundColor: '#1a1a1a', borderRadius: 25, marginRight: 8, minWidth: 45, alignItems: 'center' },
+  timerText: { color: '#0f0', fontWeight: 'bold', fontSize: 14 },
+  sendBtn: { backgroundColor: '#0f0', paddingHorizontal: 15, paddingVertical: 10, borderRadius: 20 },
+  disabledBtn: { backgroundColor: '#333' },
+  sendBtnText: { color: '#000', fontWeight: 'bold' }
 });

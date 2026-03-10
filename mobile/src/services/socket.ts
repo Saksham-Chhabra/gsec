@@ -1,7 +1,8 @@
 import { getAuthToken } from '../storage/db';
+import { API_URL } from './api';
 
-// Adjust to match your Express machine IP
-const WS_URL = 'ws://10.97.225.183:3000';  
+// Derived from API_URL (e.g. http://ip:port/api -> ws://ip:port)
+const WS_URL = API_URL.replace('http://', 'ws://').replace('/api', '');
 
 class WebSocketService {
     private ws: WebSocket | null = null;

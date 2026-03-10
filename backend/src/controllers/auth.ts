@@ -6,15 +6,29 @@ import { Session } from '../models/Session';
 
 export const registerUser = async (req: Request, res: Response) => {
     try {
-        const { username, password, identityKeyPublic } = req.body;
+        const { username, email, password, identityKeyPublic } = req.body;
 
-        if (!username || !password) {
-            return res.status(400).json({ error: 'Username and password are required' });
+        if (!username || !email || !password) {
+            return res.status(400).json({ error: 'Username, email, and password are required' });
         }
 
-        const existingUser = await User.findOne({ username });
+        // 1. Email Regex Validation
+        const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+        if (!emailRegex.test(email)) {
+            return res.status(400).json({ error: 'Invalid email format' });
+        }
+
+        // 2. Password Strength Validation (Min 8 characters, at least 1 number)
+        if (password.length < 8) {
+            return res.status(400).json({ error: 'Password must be at least 8 characters long' });
+        }
+        if (!/\d/.test(password)) {
+            return res.status(400).json({ error: 'Password must contain at least one number' });
+        }
+
+        const existingUser = await User.findOne({ $or: [{ username }, { email }] });
         if (existingUser) {
-            return res.status(409).json({ error: 'Username already exists' });
+            return res.status(409).json({ error: 'Username or Email already exists' });
         }
 
         const passwordHash = await argon2.hash(password);
@@ -22,6 +36,7 @@ export const registerUser = async (req: Request, res: Response) => {
         // identityKeyPublic might be sent later, but we allow it on registration if ready
         const user = new User({
             username,
+            email,
             passwordHash,
             identityKeyPublic: identityKeyPublic || 'PENDING'
         });
@@ -55,11 +70,13 @@ export const loginUser = async (req: Request, res: Response) => {
             return res.status(400).json({ error: 'Username and password are required' });
         }
 
-        console.log(`Login attempt for username: ${username}`);
-        const user = await User.findOne({ username });
+        console.log(`Login attempt for identifier: ${username}`);
+        const user = await User.findOne({ 
+            $or: [{ username }, { email: username }] 
+        });
         if (!user) {
             console.log(`User not found: ${username}`);
-            return res.status(401).json({ error: `User ${username} not found in database` });
+            return res.status(401).json({ error: `User identifier ${username} not found in database` });
         }
 
         const validPassword = await argon2.verify(user.passwordHash, password);
