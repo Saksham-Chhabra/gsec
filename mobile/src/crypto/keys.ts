@@ -1,9 +1,9 @@
-import sodium from 'react-native-libsodium';
-import * as Keychain from 'react-native-keychain';
+import sodium from 'libsodium-wrappers';
+import * as SecureStore from 'expo-secure-store';
 
 export interface KeyPair {
-    publicKey: string;
-    privateKey: string;
+    publicKey: Uint8Array;
+    privateKey: Uint8Array;
 }
 
 // Ensure libsodium is ready before executing anything
@@ -16,29 +16,30 @@ export const verifyCryptoEngine = async () => {
 export const generateIdentityKeyPair = async (): Promise<KeyPair> => {
     await sodium.ready;
     const { publicKey, privateKey } = await sodium.crypto_box_keypair();
-    
-    // Store Private Key Securely
-    await Keychain.setGenericPassword('identity_private_key', privateKey, {
-      service: 'g-sec-identity',
-      accessible: Keychain.ACCESSIBLE.WHEN_UNLOCKED_THIS_DEVICE_ONLY,
+    // Store both securely (encoded as JSON base64 string)
+    const keyData = JSON.stringify({
+        publicKey: Array.from(publicKey),
+        privateKey: Array.from(privateKey)
     });
+    
+    await SecureStore.setItemAsync('identity_keys', keyData);
 
     return { publicKey, privateKey };
 };
 
-export const getIdentityPublicKey = async (): Promise<string | null> => {
+export const getIdentityKeyPair = async (): Promise<KeyPair | null> => {
     await sodium.ready;
     try {
-        const credentials = await Keychain.getGenericPassword({ service: 'g-sec-identity' });
+        const credentials = await SecureStore.getItemAsync('identity_keys');
         if (credentials) {
-            const privateKey = credentials.password;
-            // Derive public key again instead of storing it locally separately to keep integrity
-            // But if cost is high, we can refactor to store both. 
-            // In libsodium, there's no direct derive func from private easily exposed in JS wrapper without extra steps or we just store them together.
-            // Let's store them together.
-            
-            // Wait, standard practice is just returning if requested, so let's refactor the store above to hold public too.
+            const parsed = JSON.parse(credentials);
+            return {
+                publicKey: new Uint8Array(parsed.publicKey),
+                privateKey: new Uint8Array(parsed.privateKey)
+            };
         }
-    } catch(e) {}
+    } catch(e) {
+        console.error("Failed to fetch identity keys from Keychain", e);
+    }
     return null;
 }

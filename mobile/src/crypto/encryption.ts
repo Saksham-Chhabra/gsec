@@ -1,43 +1,41 @@
-import sodium from 'react-native-libsodium';
+import sodium from 'libsodium-wrappers';
 
 // ChaCha20-Poly1305 encryption wrapper
 export const encryptMessage = async (
-    plaintext: string,
-    sessionKey: string
-): Promise<{ ciphertext: string; nonce: string }> => {
+    plaintext: string | Uint8Array,
+    sessionKey: Uint8Array,
+    associatedData: Uint8Array | null = null
+): Promise<{ ciphertext: Uint8Array; nonce: Uint8Array; header: Uint8Array | null }> => {
     await sodium.ready;
     
-    // Generate a random 24-byte nonce (XChaCha20-Poly1305 uses 24 bytes, standard ChaCha20 uses 8 or 12)
-    // Libsodium crypto_secretbox_easy uses XSalsa20-Poly1305 or XChaCha20 depending on the exact bindings.
-    // react-native-libsodium uses crypto_secretbox (XSalsa20) by default, but let's strictly use AEAD ChaCha20-Poly1305 if available.
-    // If react-native-libsodium lacks direct AEAD ChaCha20 exposed cleanly, crypto_secretbox_easy is the libsodium standard for payload encryption.
-    // Assuming `crypto_aead_chacha20poly1305_ietf_encrypt` is available:
+    // Generate a random 12-byte nonce for regular ChaCha20-Poly1305
+    const nonce = sodium.randombytes_buf(sodium.crypto_aead_chacha20poly1305_ietf_NPUBBYTES);
     
-    const nonce = await sodium.randombytes_buf(sodium.crypto_aead_chacha20poly1305_ietf_NPUBBYTES);
-    
-    const ciphertext = await sodium.crypto_aead_chacha20poly1305_ietf_encrypt(
+    // Encrypt the plaintext and compute MAC tag natively
+    const ciphertext = sodium.crypto_aead_chacha20poly1305_ietf_encrypt(
         plaintext,
-        null, // additional data
+        associatedData, // AD (header) binds ciphertext to metadata so AD can't be swapped
         null, // nsec (not used)
         nonce,
         sessionKey
     );
     
-    return { ciphertext, nonce };
+    return { ciphertext, nonce, header: associatedData };
 };
 
 export const decryptMessage = async (
-    ciphertext: string,
-    nonce: string,
-    sessionKey: string
-): Promise<string | null> => {
+    ciphertext: Uint8Array,
+    nonce: Uint8Array,
+    sessionKey: Uint8Array,
+    associatedData: Uint8Array | null = null
+): Promise<Uint8Array | null> => {
     await sodium.ready;
     
     try {
-        const plaintext = await sodium.crypto_aead_chacha20poly1305_ietf_decrypt(
+        const plaintext = sodium.crypto_aead_chacha20poly1305_ietf_decrypt(
             null, // nsec (not used)
             ciphertext,
-            null, // additional data
+            associatedData, // must match encryption AD
             nonce,
             sessionKey
         );

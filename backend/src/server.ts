@@ -16,6 +16,6 @@ const server = http.createServer(app);
 // Setup WebSocket server
 setupWebSocket(server);
 
-server.listen(port, () => {
-    console.log(`P2P Signaling Server running on port ${port}`);
+server.listen(port as number, '0.0.0.0', () => {
+    console.log(`P2P Signaling Server running on port ${port} (0.0.0.0)`);
 });

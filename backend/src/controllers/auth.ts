@@ -55,15 +55,19 @@ export const loginUser = async (req: Request, res: Response) => {
             return res.status(400).json({ error: 'Username and password are required' });
         }
 
+        console.log(`Login attempt for username: ${username}`);
         const user = await User.findOne({ username });
         if (!user) {
-            return res.status(401).json({ error: 'Invalid credentials' });
+            console.log(`User not found: ${username}`);
+            return res.status(401).json({ error: `User ${username} not found in database` });
         }
 
         const validPassword = await argon2.verify(user.passwordHash, password);
         if (!validPassword) {
-            return res.status(401).json({ error: 'Invalid credentials' });
+            console.log(`Invalid password for user: ${username}`);
+            return res.status(401).json({ error: 'Wrong password provided' });
         }
+        console.log(`Login successful for user: ${username}`);
 
         const sessionToken = crypto.randomBytes(32).toString('base64');
         const deviceId = req.headers['x-device-id'] as string || 'unknown';
