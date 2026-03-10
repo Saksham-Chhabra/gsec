@@ -40,6 +40,22 @@ export const setupWebSocket = (server: Server) => {
             activeConnections.set(userId, ws);
             console.log(`User ${userId} connected via WebSocket`);
 
+            // 1.5 Deliver offline messages
+            const pendingMessages = await OfflineMessage.find({ recipientId: session.userId }).sort({ createdAt: 1 });
+            if (pendingMessages.length > 0) {
+                console.log(`Delivering ${pendingMessages.length} offline messages to ${userId}`);
+                for (const msg of pendingMessages) {
+                    const payload = JSON.parse(msg.encryptedPayload);
+                    ws.send(JSON.stringify({
+                        ...payload,
+                        senderId: msg.senderId.toString(),
+                        isOffline: true
+                    }));
+                }
+                // Clear the queue after delivery
+                await OfflineMessage.deleteMany({ _id: { $in: pendingMessages.map(m => m._id) } });
+            }
+
             // 2. Handle incoming real-time messages
             ws.on('message', async (data: string) => {
                 try {
@@ -47,16 +63,15 @@ export const setupWebSocket = (server: Server) => {
                     const payload = JSON.parse(messageString);
                     
                     // Route P2P message based on payload.recipientId
-                    if (payload.type === 'chat_message' && payload.recipientId) {
+                    const p2pTypes = ['chat_message', 'key_exchange', 'key_exchange_response'];
+                    if (p2pTypes.includes(payload.type) && payload.recipientId) {
                         const recipientWs = activeConnections.get(payload.recipientId);
 
                         if (recipientWs && recipientWs.readyState === WebSocket.OPEN) {
                             // Relay strictly as-is to recipient
                             recipientWs.send(JSON.stringify({
-                                type: 'chat_message',
-                                senderId: ws.userId,
-                                ciphertext: payload.ciphertext,
-                                header: payload.header
+                                ...payload,
+                                senderId: ws.userId
                             }));
                         } else {
                             // Recipient is offline, dump encrypted ciphertext directly to MongoDB queue

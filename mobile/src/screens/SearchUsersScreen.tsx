@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { View, Text, TextInput, Button, StyleSheet, Alert, SafeAreaView } from 'react-native';
+import { View, Text, TextInput, Button, StyleSheet, Alert, SafeAreaView, TouchableOpacity } from 'react-native';
 import sodium from 'libsodium-wrappers';
 import { searchPeerUser } from '../services/api';
 import { initRatchetSender } from '../crypto/ratchet';
@@ -78,8 +78,13 @@ export const SearchUsersScreen = ({ navigation }: any) => {
 
     return (
         <SafeAreaView style={styles.container}>
-            <View style={styles.inner}>
+            <View style={styles.header}>
                 <Text style={styles.title}>Find Peer</Text>
+                <TouchableOpacity onPress={() => navigation.navigate('Settings')} style={styles.settingsIcon}>
+                    <Text style={{ fontSize: 24 }}>⚙️</Text>
+                </TouchableOpacity>
+            </View>
+            <View style={styles.inner}>
                 <Text style={styles.subtitle}>Enter an exact username to establish a secure E2EE connection.</Text>
                 
                 <TextInput
@@ -106,9 +111,11 @@ export const SearchUsersScreen = ({ navigation }: any) => {
 
 const styles = StyleSheet.create({
     container: { flex: 1, backgroundColor: '#000' },
+    header: { flexDirection: 'row', justifyContent: 'center', alignItems: 'center', padding: 20, position: 'relative' },
+    settingsIcon: { position: 'absolute', right: 20 },
     inner: { flex: 1, padding: 20, justifyContent: 'center' },
-    title: { color: '#0f0', fontSize: 32, fontWeight: 'bold', marginBottom: 10, textAlign: 'center' },
-    subtitle: { color: '#888', fontSize: 16, marginBottom: 30, textAlign: 'center' },
+    title: { color: '#0f0', fontSize: 32, fontWeight: 'bold', textAlign: 'center' },
+    subtitle: { color: '#888', fontSize: 16, marginBottom: 30, textAlign: 'center', marginTop: 10 },
     input: {
         backgroundColor: '#111',
         color: '#fff',

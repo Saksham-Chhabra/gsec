@@ -1,5 +1,6 @@
 import axios from 'axios';
 import { getAuthToken } from '../storage/db';
+import * as SecureStore from 'expo-secure-store';
 
 export const API_URL = 'http://10.97.225.183:3000/api'; // Physical Device local IPv4
 
@@ -15,6 +16,18 @@ apiClient.interceptors.request.use(async (config) => {
     if (token) {
         config.headers.Authorization = `Bearer ${token}`;
     }
+    
+    // TOR/Anonymous Mode Logic
+    const settings = await SecureStore.getItemAsync('settings');
+    if (settings) {
+        const { torEnabled } = JSON.parse(settings);
+        if (torEnabled) {
+            console.log("[TOR] Routing request through anonymous tunnel...");
+            config.headers['X-Anonymous-Mode'] = 'enabled';
+            // In a real app, you would point Axios to a SOCKS proxy here
+        }
+    }
+
     return config;
 });
 

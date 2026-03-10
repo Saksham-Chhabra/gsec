@@ -36,6 +36,9 @@ class WebSocketService {
                 if (data.type === 'chat_message') {
                     // Route to UI / Ratchet engine
                     this.messageListeners.forEach(listener => listener(data));
+                } else if (data.type === 'key_exchange' || data.type === 'key_exchange_response') {
+                    // Route handshake messages to the same listeners
+                    this.messageListeners.forEach(listener => listener(data));
                 }
             } catch (error) {
                 console.error("Failed to parse incoming WS message", error);
@@ -54,13 +57,25 @@ class WebSocketService {
         };
     }
 
-    sendChatMessage(recipientId: string, ciphertext: Uint8Array, header: any) {
+    sendChatMessage(recipientId: string, ciphertext: Uint8Array, header: any, timer: number = 0) {
         if (this.ws && this.ws.readyState === WebSocket.OPEN) {
             this.ws.send(JSON.stringify({
                 type: 'chat_message',
                 recipientId,
                 ciphertext: Array.from(ciphertext), // Serialize to flat array for JSON
-                header
+                header,
+                timer
+            }));
+            return true;
+        }
+        return false;
+    }
+
+    sendHandshake(recipientId: string, payload: any) {
+        if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+            this.ws.send(JSON.stringify({
+                ...payload,
+                recipientId
             }));
             return true;
         }

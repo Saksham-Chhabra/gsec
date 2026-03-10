@@ -11,6 +11,25 @@ export const getAuthToken = async (): Promise<string | null> => {
 
 export const clearAuthToken = async () => {
     await SecureStore.deleteItemAsync('auth_token');
+    await SecureStore.deleteItemAsync('user_id');
+    await SecureStore.deleteItemAsync('settings');
+};
+
+export const saveSettings = async (settings: any) => {
+    await SecureStore.setItemAsync('settings', JSON.stringify(settings));
+};
+
+export const getSettings = async (): Promise<any> => {
+    const data = await SecureStore.getItemAsync('settings');
+    return data ? JSON.parse(data) : { torEnabled: false, screenshotProtection: true, backgroundBlur: true };
+};
+
+export const saveUserId = async (userId: string) => {
+    await SecureStore.setItemAsync('user_id', userId);
+};
+
+export const getUserId = async (): Promise<string | null> => {
+    return await SecureStore.getItemAsync('user_id');
 };
 
 // Store securely in a real app (with react-native-mmkv or encrypted storage), using AsyncStorage for dev
@@ -51,6 +70,7 @@ export interface LocalMessage {
     text: string;
     isSender: boolean;
     timestamp: string; // ISO string for JSON compatibility
+    expiresAt?: string; // ISO string for cleanup
 }
 
 export const saveChatMessage = async (peerId: string, message: LocalMessage) => {
@@ -69,4 +89,15 @@ export const saveChatMessage = async (peerId: string, message: LocalMessage) => 
 export const getChatMessages = async (peerId: string): Promise<LocalMessage[]> => {
     const data = await SecureStore.getItemAsync(`messages_${peerId}`);
     return data ? JSON.parse(data) : [];
+};
+
+export const deleteChatMessage = async (peerId: string, messageId: string) => {
+    const key = `messages_${peerId}`;
+    const data = await SecureStore.getItemAsync(key);
+    if (!data) return;
+    
+    let messages: LocalMessage[] = JSON.parse(data);
+    messages = messages.filter(m => m.id !== messageId);
+    
+    await SecureStore.setItemAsync(key, JSON.stringify(messages));
 };

@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { View, Text, TextInput, Button, StyleSheet, Alert, SafeAreaView, TouchableOpacity } from 'react-native';
 import { apiClient } from '../services/api';
-import { saveAuthToken } from '../storage/db';
+import { saveAuthToken, saveUserId } from '../storage/db';
 import { generateIdentityKeyPair, getIdentityKeyPair } from '../crypto/keys';
 
 export const LoginScreen = ({ navigation }: any) => {
@@ -18,9 +18,10 @@ export const LoginScreen = ({ navigation }: any) => {
         setLoading(true);
         try {
             const response = await apiClient.post('/auth/login', { username, password });
-            const { token } = response.data;
+            const { token, userId } = response.data;
             
             await saveAuthToken(token);
+            await saveUserId(userId);
 
             // Ensure we have identity keys generated
             const existingKeys = await getIdentityKeyPair();
