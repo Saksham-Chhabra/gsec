@@ -1,25 +1,35 @@
 import sodium from 'libsodium-wrappers';
 import { socketService } from './socket';
-import { getRatchetState, saveRatchetState, saveChatMessage, getUserId, resetRatchetState } from '../storage/db';
+import { getRatchetState, saveRatchetState, saveChatMessage, getUserId } from '../storage/db';
 import { ratchetDecrypt, ratchetEncrypt, RatchetMessageHeader } from '../crypto/ratchet';
-import { processHandshake, createHandshakeResponse, createHandshakeInit } from '../crypto/handshake';
-import { getIdentityKeyPair } from '../crypto/keys';
-
-const HANDSHAKE_TIMEOUT_MS = 10_000; // 10 seconds to wait for handshake response
-
-interface PendingMessage {
-    payload: any;
-    retries: number;
-}
+import { computeAsynchronous3DH, PeerKeyBundle } from '../crypto/prekey';
+import { getIdentityKeyPair, getPreKeyPair } from '../crypto/keys';
+import { getPeerKeys } from './api';
 
 class MessageService {
     private isInitialized = false;
     private uiListeners: Set<() => void> = new Set();
     private processingQueue: Promise<void> = Promise.resolve();
-    private pendingMessages: Map<string, PendingMessage[]> = new Map();
+    private eventListeners: Map<string, Set<(payload: any) => void>> = new Map();
 
-    // Handshake tracking: resolves when key_exchange_response arrives for a given peerId
-    private handshakeResolvers: Map<string, () => void> = new Map();
+    // Expose the underlying WebSocket for AnonymousChatScreen direct sends
+    get socket(): WebSocket | null {
+        return (socketService as any).ws || null;
+    }
+
+    // Event emitter compatibility (used by AnonymousChatScreen for anon_message)
+    on(event: string, handler: (payload: any) => void) {
+        if (!this.eventListeners.has(event)) this.eventListeners.set(event, new Set());
+        this.eventListeners.get(event)!.add(handler);
+    }
+
+    off(event: string, handler: (payload: any) => void) {
+        this.eventListeners.get(event)?.delete(handler);
+    }
+
+    private emitEvent(event: string, payload: any) {
+        this.eventListeners.get(event)?.forEach(h => h(payload));
+    }
 
     async init() {
         if (this.isInitialized) return;
@@ -30,72 +40,71 @@ class MessageService {
         console.log("[MessageService] Global listener and socket initialized");
     }
 
-    addUIListener(callback: () => void) {
-        this.uiListeners.add(callback);
-    }
+    addUIListener(callback: () => void) { this.uiListeners.add(callback); }
+    removeUIListener(callback: () => void) { this.uiListeners.delete(callback); }
+    private notifyUI() { this.uiListeners.forEach(l => l()); }
 
-    removeUIListener(callback: () => void) {
-        this.uiListeners.delete(callback);
-    }
-
-    private notifyUI() {
-        this.uiListeners.forEach(l => l());
-    }
-
-    // ─────────────────────────────────────────────────────────
-    //  ENSURE SESSION — the core guarantee
-    // ─────────────────────────────────────────────────────────
+    // ─────────────────────────────────────────────
+    //  ENSURE SESSION (async PreKey-based)
+    // ─────────────────────────────────────────────
     async ensureSession(peerId: string): Promise<boolean> {
         const existing = await getRatchetState(peerId);
-        if (existing) return true; // session already good
+        if (existing) {
+            console.log(`[MessageService] Session exists for ${peerId.slice(-4)}`);
+            return true;
+        }
 
         const myId = await getUserId();
-        const myKeys = await getIdentityKeyPair();
-        if (!myId || !myKeys) {
+        const myIdentityKeys = await getIdentityKeyPair();
+        const myPreKeys = await getPreKeyPair();
+        if (!myId || !myIdentityKeys || !myPreKeys) {
             console.error("[MessageService] Cannot ensureSession: no userId or keys");
             return false;
         }
 
-        console.log(`[MessageService] ensureSession: No session for ${peerId.slice(-4)}. Sending key_exchange...`);
+        console.log(`[MessageService] No session for ${peerId.slice(-4)}. Fetching PreKey bundle...`);
 
-        // Send key_exchange
-        const handshake = await createHandshakeInit(myId, peerId, myKeys, myKeys);
-        const sent = socketService.sendHandshake(peerId, handshake);
-        if (!sent) {
-            console.error("[MessageService] ensureSession: WebSocket not connected, cannot send handshake");
+        const peerKeysRaw = await getPeerKeys(peerId);
+        if (!peerKeysRaw || !peerKeysRaw.identityKeyPublic || !peerKeysRaw.preKeyPublic) {
+            console.error(`[MessageService] Could not fetch keys for ${peerId.slice(-4)}`);
             return false;
         }
 
-        // Wait for processHandshake to resolve (it will be triggered by incoming key_exchange_response)
-        const sessionEstablished = await new Promise<boolean>((resolve) => {
-            const timeout = setTimeout(() => {
-                this.handshakeResolvers.delete(peerId);
-                console.warn(`[MessageService] ensureSession: Handshake timeout for ${peerId.slice(-4)}`);
-                resolve(false);
-            }, HANDSHAKE_TIMEOUT_MS);
-
-            this.handshakeResolvers.set(peerId, () => {
-                clearTimeout(timeout);
-                this.handshakeResolvers.delete(peerId);
-                resolve(true);
-            });
-        });
-
-        if (sessionEstablished) {
-            console.log(`[MessageService] ensureSession: Session established with ${peerId.slice(-4)} ✅`);
+        const INVALID = ['PLACEHOLDER', 'PENDING', 'null', 'undefined', ''];
+        let peerBundle: PeerKeyBundle;
+        try {
+            const parseKey = (raw: string): Uint8Array => {
+                if (!raw || INVALID.includes(raw)) throw new Error(`Key not uploaded: "${raw}"`);
+                if (raw.startsWith('[')) return new Uint8Array(JSON.parse(raw));
+                return sodium.from_base64(raw);
+            };
+            peerBundle = {
+                identityKeyPublic: parseKey(peerKeysRaw.identityKeyPublic),
+                preKeyPublic: parseKey(peerKeysRaw.preKeyPublic)
+            };
+            console.log(`[MessageService] Parsed peer bundle: identity=${peerBundle.identityKeyPublic.length}B, prekey=${peerBundle.preKeyPublic.length}B`);
+        } catch (e) {
+            console.error(`[MessageService] Failed to parse peer key bundle:`, e);
+            return false;
         }
-        return sessionEstablished;
+
+        try {
+            const { state } = await computeAsynchronous3DH(myId, peerId, myIdentityKeys, myPreKeys, peerBundle);
+            await saveRatchetState(peerId, state);
+            console.log(`[MessageService] ✅ Session established with ${peerId.slice(-4)}`);
+            return true;
+        } catch (e) {
+            console.error(`[MessageService] Failed to compute 3DH:`, e);
+            return false;
+        }
     }
 
-    // ─────────────────────────────────────────────────────────
-    //  SEND — guarantees session before encrypting
-    // ─────────────────────────────────────────────────────────
+    // ─────────────────────────────────────────────
+    //  SEND
+    // ─────────────────────────────────────────────
     async encryptAndSendMessage(peerId: string, plaintext: string, timer: number = 0) {
-        // ensureSession runs OUTSIDE the queue so the handshake listener can still process
         const sessionReady = await this.ensureSession(peerId);
-        if (!sessionReady) {
-            throw new Error("Could not establish secure session. Is the peer online?");
-        }
+        if (!sessionReady) throw new Error("Could not establish secure session.");
 
         return new Promise<void>((resolve, reject) => {
             this.processingQueue = this.processingQueue.then(async () => {
@@ -104,7 +113,10 @@ class MessageService {
                     if (!ratchetState) throw new Error("Session lost after ensureSession");
 
                     const ad = sodium.from_string("g-sec-chat");
-                    const enc = await ratchetEncrypt(ratchetState, sodium.from_string(plaintext), ad);
+                    const ptBytes = sodium.from_string(plaintext);
+                    console.log(`[MessageService/Tx] Plaintext "${plaintext}" len=${ptBytes.length}`);
+
+                    const enc = await ratchetEncrypt(ratchetState, ptBytes, ad);
                     await saveRatchetState(peerId, enc.state);
 
                     const flatHeader = {
@@ -113,7 +125,11 @@ class MessageService {
                         n: enc.header.n
                     };
 
-                    socketService.sendChatMessage(peerId, enc.ciphertext, flatHeader, timer);
+                    console.log(`[MessageService/Tx] Ciphertext len=${enc.ciphertext.length} n=${enc.header.n}`);
+                    const sent = socketService.sendChatMessage(peerId, enc.ciphertext, flatHeader, timer);
+                    if (!sent) {
+                        console.warn(`[MessageService] WebSocket not open. Message queued by socket service.`);
+                    }
                     console.log(`[MessageService] ENCRYPTED & SENT to ${peerId.slice(-4)}`);
                     resolve();
                 } catch (e) {
@@ -124,9 +140,9 @@ class MessageService {
         });
     }
 
-    // ─────────────────────────────────────────────────────────
+    // ─────────────────────────────────────────────
     //  INCOMING MESSAGE HANDLER
-    // ─────────────────────────────────────────────────────────
+    // ─────────────────────────────────────────────
     private async handleIncomingMessage(payload: any) {
         this.processingQueue = this.processingQueue.then(async () => {
             try {
@@ -142,60 +158,21 @@ class MessageService {
             const myId = await getUserId();
             if (!myId) return;
 
-            // ── 1. HANDSHAKES ──────────────────────────────────
-            if (payload.type === 'key_exchange' || payload.type === 'key_exchange_response') {
-                const myKeys = await getIdentityKeyPair();
-                if (!myKeys) return;
-
-                const peerId = payload.senderId;
-                const isInitiator = payload.type === 'key_exchange_response';
-                const { state } = await processHandshake(payload, myKeys, myKeys, isInitiator);
-
-                await saveRatchetState(peerId, state);
-                console.log(`[MessageService] ✅ Handshake complete with ${peerId.slice(-4)} (isInitiator=${isInitiator})`);
-
-                // If we received a key_exchange (init), respond with key_exchange_response
-                if (payload.type === 'key_exchange') {
-                    const response = await createHandshakeResponse(myId, peerId, myKeys, myKeys);
-                    socketService.sendHandshake(peerId, response);
-                    console.log(`[MessageService] Sent key_exchange_response to ${peerId.slice(-4)}`);
-                }
-
-                // Resolve any pending ensureSession promise for this peer
-                const resolver = this.handshakeResolvers.get(peerId);
-                if (resolver) {
-                    resolver();
-                }
-
-                // Replay any queued messages for this peer
-                const pending = this.pendingMessages.get(peerId) || [];
-                if (pending.length > 0) {
-                    console.log(`[MessageService] Replaying ${pending.length} queued messages for ${peerId.slice(-4)}`);
-                    this.pendingMessages.delete(peerId);
-                    for (const pm of pending) {
-                        await this.processMessageInternal(pm.payload);
-                    }
-                }
-
-                this.notifyUI();
-                return;
-            }
-
-            // ── 2. CHAT MESSAGES ───────────────────────────────
             if (payload.type === 'chat_message') {
                 const peerId = payload.senderId;
-                console.log(`[MessageService] Processing chat_message from ${peerId.slice(-4)}`);
+                console.log(`[MessageService/Rx] chat_message from ${peerId.slice(-4)} ciphertext len=${payload.ciphertext?.length || 0}`);
 
+                // Ensure session exists
                 let ratchetState = await getRatchetState(peerId);
                 if (!ratchetState) {
-                    // Queue this message; session will be created when handshake arrives
-                    console.warn(`[MessageService] No session for ${peerId.slice(-4)}. Queuing message.`);
-                    const existing = this.pendingMessages.get(peerId) || [];
-                    if (existing.length < 20) {
-                        existing.push({ payload, retries: 0 });
-                        this.pendingMessages.set(peerId, existing);
+                    console.log(`[MessageService] No session for ${peerId.slice(-4)}, establishing...`);
+                    const ok = await this.ensureSession(peerId);
+                    if (!ok) {
+                        console.warn(`[MessageService] Cannot establish session. Message discarded.`);
+                        return;
                     }
-                    return;
+                    ratchetState = await getRatchetState(peerId);
+                    if (!ratchetState) return;
                 }
 
                 const ciphertext = new Uint8Array(payload.ciphertext);
@@ -210,7 +187,7 @@ class MessageService {
                     await saveRatchetState(peerId, dec.state);
 
                     const messageText = sodium.to_string(dec.plaintext);
-                    console.log(`[MessageService] ✅ DECRYPTED from ${peerId.slice(-4)}: "${messageText.substring(0, 20)}..."`);
+                    console.log(`[MessageService] ✅ DECRYPTED from ${peerId.slice(-4)}: "${messageText.substring(0, 20)}"`);
 
                     let expiresAt: string | undefined;
                     if (payload.timer && payload.timer > 0) {
@@ -225,25 +202,18 @@ class MessageService {
                         expiresAt
                     });
 
-                    console.log(`[MessageService] PERSISTED to DB for ${peerId.slice(-4)}`);
                     this.notifyUI();
-                } catch (decryptError) {
-                    console.error(`[MessageService] Decryption FAILED for ${peerId.slice(-4)}. Resetting and re-establishing...`, decryptError);
-
-                    // Reset corrupted state
-                    await resetRatchetState(peerId);
-
-                    // Immediately re-establish session
-                    console.log(`[MessageService] Auto re-establishing session with ${peerId.slice(-4)}...`);
-                    const myKeys = await getIdentityKeyPair();
-                    if (myKeys) {
-                        const handshake = await createHandshakeInit(myId, peerId, myKeys, myKeys);
-                        socketService.sendHandshake(peerId, handshake);
-                        console.log(`[MessageService] Sent key_exchange to ${peerId.slice(-4)} for session recovery`);
-                    }
-
-                    this.notifyUI();
+                } catch (decErr) {
+                    // DO NOT auto-reset — that causes session thrashing.
+                    // Just log and discard the unreadable message.
+                    console.error(`[MessageService] Decrypt FAILED for ${peerId.slice(-4)}:`, decErr);
+                    console.warn(`[MessageService] Message discarded. Session preserved to avoid thrashing.`);
                 }
+            }
+
+            // Anonymous room messages — forward to event listeners (AnonymousChatScreen)
+            if (payload.type === 'anon_message') {
+                this.emitEvent('anon_message', payload);
             }
         } catch (error) {
             console.error("[MessageService] CRITICAL ERROR:", error);

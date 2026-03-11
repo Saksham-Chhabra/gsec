@@ -30,19 +30,6 @@ export const SettingsScreen = ({ navigation }: any) => {
     return (
         <SafeAreaView style={styles.container}>
             <ScrollView contentContainerStyle={styles.inner}>
-                <Text style={styles.sectionTitle}>Anonymity</Text>
-                <View style={styles.settingRow}>
-                    <View>
-                        <Text style={styles.settingLabel}>Anonymous Mode (TOR)</Text>
-                        <Text style={styles.settingDesc}>Route traffic through OR network</Text>
-                    </View>
-                    <Switch 
-                        value={settings.torEnabled} 
-                        onValueChange={() => toggleSetting('torEnabled')}
-                        trackColor={{ false: '#333', true: '#0f0' }}
-                    />
-                </View>
-
                 <Text style={styles.sectionTitle}>Device Security</Text>
                 <View style={styles.settingRow}>
                     <View>

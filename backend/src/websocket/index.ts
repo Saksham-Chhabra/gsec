@@ -63,7 +63,7 @@ export const setupWebSocket = (server: Server) => {
                     const payload = JSON.parse(messageString);
                     
                     // Route P2P message based on payload.recipientId
-                    const p2pTypes = ['chat_message', 'key_exchange', 'key_exchange_response'];
+                    const p2pTypes = ['chat_message'];
                     if (p2pTypes.includes(payload.type) && payload.recipientId) {
                         const recipientWs = activeConnections.get(payload.recipientId);
 
@@ -82,6 +82,35 @@ export const setupWebSocket = (server: Server) => {
                                     senderId: new Types.ObjectId(ws.userId as string),
                                     encryptedPayload: JSON.stringify(payload)
                                 } as any);
+                            }
+                        }
+                    } else if (payload.type === 'anon_message' && payload.roomId) {
+                        // Lookup room to verify membership and mask identity
+                        const Room = require('../models/Room').Room;
+                        const room = await Room.findOne({ roomId: payload.roomId });
+                        
+                        if (room && room.status === 'active') {
+                            const senderMember = room.members.find((m: any) => m.userId.toString() === ws.userId);
+                            if (senderMember) {
+                                // Update room activity timestamp
+                                room.lastActivityAt = new Date();
+                                await room.save();
+
+                                // Broadcast strictly masked payload
+                                room.members.forEach((member: any) => {
+                                    if (member.userId.toString() !== ws.userId) {
+                                        const recipientWs = activeConnections.get(member.userId.toString());
+                                        if (recipientWs && recipientWs.readyState === WebSocket.OPEN) {
+                                            recipientWs.send(JSON.stringify({
+                                                type: 'anon_message',
+                                                roomId: room.roomId,
+                                                senderId: senderMember.anonymousId, // MASKED!
+                                                content: payload.content,
+                                                timestamp: Date.now()
+                                            }));
+                                        }
+                                    }
+                                });
                             }
                         }
                     }

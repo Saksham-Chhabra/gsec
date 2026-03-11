@@ -47,3 +47,38 @@ export const getIdentityKeyPair = async (): Promise<KeyPair | null> => {
     }
     return null;
 }
+
+// Generates an X25519 PreKey pair for Asynchronous Ratchet init
+export const generatePreKeyPair = async (): Promise<KeyPair> => {
+    await sodium.ready;
+    const { publicKey, privateKey } = await sodium.crypto_box_keypair();
+    const keyData = JSON.stringify({
+        publicKey: Array.from(publicKey),
+        privateKey: Array.from(privateKey)
+    });
+    
+    const userId = await SecureStore.getItemAsync('user_id');
+    const key = userId ? `pre_keys_${userId}` : 'pre_keys';
+    await SecureStore.setItemAsync(key, keyData);
+
+    return { publicKey, privateKey };
+};
+
+export const getPreKeyPair = async (): Promise<KeyPair | null> => {
+    await sodium.ready;
+    try {
+        const userId = await SecureStore.getItemAsync('user_id');
+        const key = userId ? `pre_keys_${userId}` : 'pre_keys';
+        const credentials = await SecureStore.getItemAsync(key);
+        if (credentials) {
+            const parsed = JSON.parse(credentials);
+            return {
+                publicKey: new Uint8Array(parsed.publicKey),
+                privateKey: new Uint8Array(parsed.privateKey)
+            };
+        }
+    } catch(e) {
+        console.error("Failed to fetch pre keys from Keychain", e);
+    }
+    return null;
+};

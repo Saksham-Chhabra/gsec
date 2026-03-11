@@ -3,6 +3,7 @@ import http from 'http';
 import app from './app';
 import { connectDB } from './config/db';
 import { setupWebSocket } from './websocket';
+import { startRoomCleanupJob } from './cron/roomCleanup';
 
 dotenv.config();
 
@@ -10,6 +11,9 @@ const port = process.env.PORT || 3000;
 
 // Connect to MongoDB
 connectDB();
+
+// Start background workers
+startRoomCleanupJob();
 
 const server = http.createServer(app);
 

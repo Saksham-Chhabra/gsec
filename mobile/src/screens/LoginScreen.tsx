@@ -3,8 +3,8 @@ import { View, Text, TextInput, Button, StyleSheet, Alert, TouchableOpacity, Key
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { apiClient } from '../services/api';
 import { socketService } from '../services/socket';
-import { saveAuthToken, saveUserId } from '../storage/db';
-import { generateIdentityKeyPair } from '../crypto/keys';
+import { saveAuthToken, saveUserId, bumpKeyVersion } from '../storage/db';
+import { generateIdentityKeyPair, getIdentityKeyPair, generatePreKeyPair, getPreKeyPair } from '../crypto/keys';
 
 export const LoginScreen = ({ navigation }: any) => {
     const [username, setUsername] = useState('');
@@ -42,20 +42,49 @@ export const LoginScreen = ({ navigation }: any) => {
 
         setLoading(true);
         try {
+            // Step 1: Authenticate first (no keys in this call)
             const response = await apiClient.post('/auth/login', { username, password });
             const { token, userId } = response.data;
             
             await saveAuthToken(token);
-            await saveUserId(userId);
+            await saveUserId(userId); // MUST be saved before key gen so storage keys match
 
-            // ALWAYS generate fresh identity keys on login to ensure clean crypto state.
-            // Old ratchet states from previous sessions are incompatible after key regen.
-            console.log("[Login] Generating fresh identity keys for clean session...");
-            await generateIdentityKeyPair();
+            // Step 2: Check for existing keys, generate only if missing
+            console.log("[Login] Preparing cryptographic keys...");
+            let identityKeys = await getIdentityKeyPair();
+            let preKeys = await getPreKeyPair();
+
+            if (!identityKeys) {
+                console.log("[Login] No existing identity keys. Generating fresh pair...");
+                identityKeys = await generateIdentityKeyPair();
+            } else {
+                console.log("[Login] Reusing existing identity keys from Keychain.");
+            }
+
+            if (!preKeys) {
+                console.log("[Login] No existing pre keys. Generating fresh pair...");
+                preKeys = await generatePreKeyPair();
+            } else {
+                console.log("[Login] Reusing existing pre keys from Keychain.");
+            }
+
+            // Step 3: Upload keys to server (pre-serialized as JSON strings)
+            try {
+                await apiClient.post('/auth/login', { 
+                    username, 
+                    password,
+                    identityKeyPublic: JSON.stringify(Array.from(identityKeys.publicKey)),
+                    preKeyPublic: JSON.stringify(Array.from(preKeys.publicKey))
+                });
+                console.log("[Login] Keys uploaded to server successfully.");
+                await bumpKeyVersion(); // Invalidate all old ratchet sessions
+            } catch (keyErr) {
+                console.warn("[Login] Key upload failed (non-fatal):", keyErr);
+            }
 
             Alert.alert("Success", "Logged in successfully!");
-            socketService.connect(); // Connect immediately after login
-            navigation.replace('Search');
+            socketService.connect();
+            navigation.replace('Friends');
         } catch (error: any) {
             console.error("Login failed:", error);
             const msg = error.response?.data?.error || "Connection failed. Please check if your computer's IP and phone's Wi-Fi match.";
@@ -78,7 +107,7 @@ export const LoginScreen = ({ navigation }: any) => {
                 >
                     <View style={styles.inner}>
                         <Text style={styles.title}>G-SEC</Text>
-                        <Text style={styles.subtitle}>Quantum-Resistant Tactical Messaging</Text>
+                        <Text style={styles.subtitle}>Secure Messaging</Text>
                         
                         <View style={styles.inputWrapper}>
                             <Text style={styles.label}>EMAIL ADDRESS</Text>
@@ -117,10 +146,6 @@ export const LoginScreen = ({ navigation }: any) => {
                         >
                             <Text style={styles.loginBtnText}>{loading ? "AUTHENTICATING..." : "LOGIN TO SECURE NET"}</Text>
                         </TouchableOpacity>
-
-                        <Text style={styles.seedHint}>
-                            Compatible with seeded accounts: dhimansabhya@gmail.com
-                        </Text>
                     </View>
                 </ScrollView>
             </KeyboardAvoidingView>

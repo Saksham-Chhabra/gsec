@@ -3,7 +3,8 @@
   "version": "1.0.0",
   "main": "index.js",
   "scripts": {
-    "dev": "npx ts-node src/server.ts",
+    "dev": "npx ts-node-dev --respawn --transpile-only src/server.ts",
+    "tunnel": "npx localtunnel --port 5000 --subdomain gsec-app-backend-schha",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],

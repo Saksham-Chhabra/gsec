@@ -2,3 +2,34 @@ node_modules/
 .env
 .DS_Store
 docs/
+
+# Expo
+.expo/
+dist/
+web-build/
+
+# Android
+android/
+*.apk
+*.aar
+*.jks
+
+# iOS
+ios/
+*.ipa
+
+# Logs & Temporary Debug Files
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+*.log
+*.txt
+*.json
+!package.json
+!package-lock.json
+!app.json
+!tsconfig.json
+!*.md
+
+# OS
+Thumbs.db

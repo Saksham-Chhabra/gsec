@@ -16,12 +16,15 @@ const seedUsers = async () => {
         const aliceKeys = sodium.crypto_box_keypair();
         const aliceHash = await argon2.hash('password123');
         
+        const alicePreKeys = sodium.crypto_box_keypair();
+
         await User.findOneAndUpdate(
             { username: 'Alice' },
             { 
                 username: 'Alice', 
                 passwordHash: aliceHash, 
-                identityKeyPublic: sodium.to_base64(aliceKeys.publicKey) 
+                identityKeyPublic: sodium.to_base64(aliceKeys.publicKey),
+                preKeyPublic: sodium.to_base64(alicePreKeys.publicKey)
             },
             { upsert: true }
         );
@@ -33,12 +36,15 @@ const seedUsers = async () => {
         const bobKeys = sodium.crypto_box_keypair();
         const bobHash = await argon2.hash('password123');
         
+        const bobPreKeys = sodium.crypto_box_keypair();
+
         await User.findOneAndUpdate(
             { username: 'Bob' },
             { 
                 username: 'Bob', 
                 passwordHash: bobHash, 
-                identityKeyPublic: sodium.to_base64(bobKeys.publicKey) 
+                identityKeyPublic: sodium.to_base64(bobKeys.publicKey),
+                preKeyPublic: sodium.to_base64(bobPreKeys.publicKey)
             },
             { upsert: true }
         );

@@ -51,7 +51,14 @@ export const processHandshake = async (
     await sodium.ready;
 
     const remoteIdentityPub = new Uint8Array(remoteHandshake.identityPublicKey);
+    
+    console.log(`[Handshake] processHandshake raw ratchetPublicKey type: ${typeof remoteHandshake.ratchetPublicKey}, isArray: ${Array.isArray(remoteHandshake.ratchetPublicKey)}`);
+    if (Array.isArray(remoteHandshake.ratchetPublicKey)) {
+        console.log(`[Handshake] processHandshake raw ratchetPublicKey length: ${remoteHandshake.ratchetPublicKey.length}`);
+    }
+    
     const remoteRatchetPub = new Uint8Array(remoteHandshake.ratchetPublicKey);
+    console.log(`[Handshake] processHandshake new Uint8Array(remoteRatchetPub) length: ${remoteRatchetPub.length}`);
 
     // Derive myId and peerId deterministically from the handshake message
     // recipientId = the person this message was SENT TO (me)
@@ -99,8 +106,9 @@ export const processHandshake = async (
         state = await initRatchetSender(sharedSecret, remoteRatchetPub);
     } else {
         // I am Bob — I use my OWN identity key as the initial ratchet key
+        // Pass Alice's initial ratchet key (remoteRatchetPub) so Bob can also send immediately!
         console.log(`[Handshake] I am RECEIVER (Bob). DHs = my identity key`);
-        state = await initRatchetReceiver(sharedSecret, myRatchetKeyPair);
+        state = await initRatchetReceiver(sharedSecret, myRatchetKeyPair, remoteRatchetPub);
     }
 
     return { state, sharedSecret };

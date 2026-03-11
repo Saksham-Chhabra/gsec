@@ -46,6 +46,25 @@ export const getUserId = async (): Promise<string | null> => {
     return await SecureStore.getItemAsync('user_id');
 };
 
+// Key version tracking — bumped every time crypto keys are uploaded to server.
+// Used to invalidate stale ratchet states that were computed with old key material.
+export const bumpKeyVersion = async (): Promise<number> => {
+    const userId = await SecureStore.getItemAsync('user_id');
+    const key = userId ? `key_version_${userId}` : 'key_version';
+    const current = await SecureStore.getItemAsync(key);
+    const newVersion = (current ? parseInt(current) : 0) + 1;
+    await SecureStore.setItemAsync(key, newVersion.toString());
+    console.log(`[Storage] Key version bumped to ${newVersion}`);
+    return newVersion;
+};
+
+export const getKeyVersion = async (): Promise<number> => {
+    const userId = await SecureStore.getItemAsync('user_id');
+    const key = userId ? `key_version_${userId}` : 'key_version';
+    const current = await SecureStore.getItemAsync(key);
+    return current ? parseInt(current) : 0;
+};
+
 // Store securely in a real app (with react-native-mmkv or encrypted storage), using AsyncStorage for dev
 // Store securely in a real app (with react-native-mmkv or encrypted storage), using AsyncStorage for dev
 // We specifically store the RatchetState mapped to the peer's user ID so we can resume chats.
@@ -68,9 +87,16 @@ export const saveRatchetState = async (peerId: string, state: RatchetState) => {
         )
     };
     
+    console.log(`[Storage] saveRatchetState: original state.DHr length: ${state.DHr?.length}`);
+    console.log(`[Storage] saveRatchetState: serialized DHr is ${serializedState.DHr ? 'array len ' + serializedState.DHr.length : 'null'}`);
+    
     const userId = await SecureStore.getItemAsync('user_id');
     const storageKey = userId ? `ratchet_state_${userId}_${peerId}` : `ratchet_state_${peerId}`;
-    await SecureStore.setItemAsync(storageKey, JSON.stringify(serializedState));
+    
+    // Tag with current key version so stale sessions can be detected
+    const keyVersion = await getKeyVersion();
+    const envelope = JSON.stringify({ v: keyVersion, state: serializedState });
+    await SecureStore.setItemAsync(storageKey, envelope);
 };
 
 export const getRatchetState = async (peerId: string): Promise<RatchetState | null> => {
@@ -79,7 +105,27 @@ export const getRatchetState = async (peerId: string): Promise<RatchetState | nu
     const data = await SecureStore.getItemAsync(storageKey);
     if (!data) return null;
 
-    const parsed = JSON.parse(data);
+    // Check key version — reject stale sessions from old key material
+    let parsed: any;
+    try {
+        const envelope = JSON.parse(data);
+        if (envelope.v !== undefined) {
+            const currentVersion = await getKeyVersion();
+            if (envelope.v !== currentVersion) {
+                console.warn(`[Storage] Stale ratchet state for ${peerId} (v${envelope.v} vs current v${currentVersion}). Discarding.`);
+                await SecureStore.deleteItemAsync(storageKey);
+                return null;
+            }
+            parsed = envelope.state;
+        } else {
+            // Legacy format (no version envelope) — treat as stale
+            console.warn(`[Storage] Legacy ratchet state format for ${peerId}. Discarding.`);
+            await SecureStore.deleteItemAsync(storageKey);
+            return null;
+        }
+    } catch {
+        return null;
+    }
     
     // Explicitly deserialize
     return {
@@ -137,6 +183,17 @@ export const getChatMessages = async (peerId: string): Promise<LocalMessage[]> =
     const msgs = data ? JSON.parse(data) : [];
     console.log(`[DB] getChatMessages - Key: ${key}, Loaded: ${msgs.length}`);
     return msgs;
+};
+
+export const deleteChatHistory = async (peerId: string) => {
+    const userId = await SecureStore.getItemAsync('user_id');
+    const key = userId ? `messages_${userId}_${peerId}` : `messages_${peerId}`;
+    await SecureStore.deleteItemAsync(key);
+    
+    // Also delete the ratchet state so the next message forces a fresh handshake
+    const stateKey = userId ? `ratchet_state_${userId}_${peerId}` : `ratchet_state_${peerId}`;
+    await SecureStore.deleteItemAsync(stateKey);
+    console.log(`[DB] Deleted all chat history and ratchet state for peer: ${peerId}`);
 };
 
 export const deleteChatMessage = async (peerId: string, messageId: string) => {

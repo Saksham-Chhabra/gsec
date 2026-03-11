@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { View, Text, StyleSheet, AppState, AppStateStatus } from 'react-native';
+import * as ScreenCapture from 'expo-screen-capture';
 import { getSettings } from '../storage/db';
 
 export const PrivacyShield = ({ children }: { children: React.ReactNode }) => {
@@ -10,6 +11,14 @@ export const PrivacyShield = ({ children }: { children: React.ReactNode }) => {
         const loadSettings = async () => {
             const settings = await getSettings();
             setBlurEnabled(settings.backgroundBlur);
+            
+            if (settings.screenshotProtection) {
+                await ScreenCapture.preventScreenCaptureAsync();
+                console.log("[Security] App-wide Screen Capture Prevention ENABLED");
+            } else {
+                await ScreenCapture.allowScreenCaptureAsync();
+                console.log("[Security] App-wide Screen Capture Prevention DISABLED");
+            }
         };
         loadSettings();
 
